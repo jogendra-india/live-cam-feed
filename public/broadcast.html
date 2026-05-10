@@ -294,6 +294,17 @@
     <div class="switch on" id="rcSwitch" onclick="toggleRemoteControl()"></div>
   </div>
   <div class="setting-row">
+    <span class="setting-label">Video quality</span>
+    <select id="qualitySelect" onchange="changeQuality(this.value)"
+            style="background:var(--surface); color:#fff; border:1px solid var(--border);
+                   border-radius:6px; padding:4px 8px; font-size:12px;">
+      <option value="auto">Auto (max)</option>
+      <option value="1080p">1080p</option>
+      <option value="720p">720p</option>
+      <option value="480p">480p</option>
+    </select>
+  </div>
+  <div class="setting-row">
     <span class="setting-label">Stream name</span>
   </div>
   <div style="padding: 0 4px;">
@@ -374,6 +385,24 @@
     { urls: "stun:stun1.l.google.com:19302" }
   ]};
 
+  // ─── Video quality presets ──────────────────────────────────────
+  // We ask the camera for the highest preset and let the browser
+  // negotiate down to whatever the device actually supports. Each
+  // preset also fixes the WebRTC encoder maxBitrate so a 4K stream
+  // isn't strangled by the default ~2.5 Mbps cap.
+  const QUALITY_PRESETS = {
+    auto:   { width: 3840, height: 2160, bitrate: 8_000_000, label: 'Auto (max)' },
+    '1080p': { width: 1920, height: 1080, bitrate: 4_500_000, label: '1080p' },
+    '720p':  { width: 1280, height: 720,  bitrate: 2_500_000, label: '720p' },
+    '480p':  { width: 854,  height: 480,  bitrate: 1_000_000, label: '480p' },
+  };
+  const QUALITY_KEY = 'lan-stream:bc-quality';
+  let videoQuality = 'auto';
+  try {
+    const q = localStorage.getItem(QUALITY_KEY);
+    if (q && QUALITY_PRESETS[q]) videoQuality = q;
+  } catch {}
+
   // ─── Persisted broadcaster identity ─────────────────────────────
   // After the first successful registration we save the stream name and
   // the streamId the server granted, so a refresh / accidental reload
@@ -401,11 +430,18 @@
     streamName = nameInput.value.trim();
 
     try {
+      const preset = QUALITY_PRESETS[videoQuality] || QUALITY_PRESETS.auto;
+      const videoConstraints = {
+        facingMode,
+        width:  { ideal: preset.width },
+        height: { ideal: preset.height },
+        frameRate: { ideal: 30 }
+      };
       // Request camera + mic upfront. Audio track is added but disabled by default.
       // This avoids a second permission prompt when user toggles audio later.
       try {
         localStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+          video: videoConstraints,
           audio: true
         });
         // Mute the audio track immediately
@@ -413,7 +449,7 @@
       } catch (audioErr) {
         // Fallback: video only if user denied audio
         localStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+          video: videoConstraints,
           audio: false
         });
         document.getElementById('audioBtn').disabled = true;
@@ -489,11 +525,12 @@
     });
 
     // ─── Remote control from viewers ───────────────────────────
-    socket.on('control:apply', ({ action }) => {
+    socket.on('control:apply', ({ action, value }) => {
       if (action === 'pause_video')   setVideoEnabled(false);
       if (action === 'resume_video')  setVideoEnabled(true);
       if (action === 'toggle_audio')  toggleAudio();
       if (action === 'flip_camera')   flipCamera();
+      if (action === 'zoom_to')       applyNativeZoom(value);
     });
 
     // ─── Talkback indicator (audio itself flows over WebRTC) ───
@@ -573,6 +610,11 @@
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     socket.emit('broadcaster:offer', { viewerId, offer });
+
+    // Push the encoder maxBitrate so this new peer doesn't get throttled
+    // to the default ~2.5 Mbps cap regardless of resolution.
+    const preset = QUALITY_PRESETS[videoQuality] || QUALITY_PRESETS.auto;
+    setTimeout(() => applyEncoderBitrate(preset.bitrate), 0);
   }
 
   // ─── Toggle Live ───────────────────────────────────────────────
@@ -599,6 +641,8 @@
         document.getElementById('livePill').classList.add('show');
         document.getElementById('viewerBadge').classList.add('show');
         document.getElementById('recBtn').disabled = false;
+        // Tell viewers what zoom range this camera supports (or null if none).
+        reportCameraCapabilities();
       });
     } else {
       isLive = false;
@@ -634,6 +678,82 @@
     setVideoEnabled(!videoEnabled);
   }
 
+  // ─── Quality control ───────────────────────────────────────────
+  // Pushes the WebRTC encoder maxBitrate to all current peers; without
+  // this the browser caps at ~2.5 Mbps regardless of resolution, which
+  // visibly throttles 1080p/4K streams.
+  function applyEncoderBitrate(bitrate) {
+    Object.values(peers).forEach(pc => {
+      const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+      if (!sender) return;
+      const params = sender.getParameters();
+      if (!params.encodings) params.encodings = [{}];
+      params.encodings[0].maxBitrate = bitrate;
+      sender.setParameters(params).catch(() => {});
+    });
+  }
+
+  async function changeQuality(q) {
+    if (!QUALITY_PRESETS[q]) return;
+    videoQuality = q;
+    try { localStorage.setItem(QUALITY_KEY, q); } catch {}
+    const preset = QUALITY_PRESETS[q];
+    if (!localStream) return;
+    const track = localStream.getVideoTracks()[0];
+    if (track) {
+      try {
+        await track.applyConstraints({
+          width:  { ideal: preset.width },
+          height: { ideal: preset.height }
+        });
+        const s = track.getSettings();
+        console.log(`[quality] requested ${preset.label}, got ${s.width}×${s.height}`);
+      } catch (e) {
+        console.warn('Quality change failed:', e);
+      }
+    }
+    applyEncoderBitrate(preset.bitrate);
+    reportCameraCapabilities(); // flag a possibly different zoom range too
+  }
+
+  // ─── Native camera zoom (for viewer-driven remote zoom) ────────
+  // Phone rear cameras typically expose a `zoom` capability; laptop
+  // webcams typically don't. We report the range to the server so
+  // viewers can show / hide the zoom slider accordingly.
+  function getCameraZoomCap() {
+    if (!localStream) return null;
+    const track = localStream.getVideoTracks()[0];
+    if (!track || !track.getCapabilities) return null;
+    let cap;
+    try { cap = track.getCapabilities(); } catch { return null; }
+    if (cap == null || cap.zoom == null) return null;
+    const settings = (track.getSettings && track.getSettings()) || {};
+    return {
+      min:     cap.zoom.min  ?? 1,
+      max:     cap.zoom.max  ?? 1,
+      step:    cap.zoom.step ?? 0.1,
+      current: settings.zoom ?? cap.zoom.min ?? 1
+    };
+  }
+
+  function reportCameraCapabilities() {
+    if (!socket || !isLive) return;
+    socket.emit('broadcaster:state', { cameraZoom: getCameraZoomCap() });
+  }
+
+  function applyNativeZoom(value) {
+    if (!localStream) return;
+    const track = localStream.getVideoTracks()[0];
+    if (!track || !track.getCapabilities) return;
+    let cap;
+    try { cap = track.getCapabilities(); } catch { return; }
+    if (cap == null || cap.zoom == null) return;
+    const v = Math.max(cap.zoom.min ?? 1, Math.min(cap.zoom.max, Number(value)));
+    track.applyConstraints({ advanced: [{ zoom: v }] })
+      .then(() => reportCameraCapabilities())
+      .catch(e => console.warn('Native zoom failed:', e));
+  }
+
   function setVideoEnabled(enabled) {
     if (!localStream) return;
     videoEnabled = enabled;
@@ -650,8 +770,9 @@
     if (!localStream) return;
     facingMode = facingMode === 'user' ? 'environment' : 'user';
     try {
+      const preset = QUALITY_PRESETS[videoQuality] || QUALITY_PRESETS.auto;
       const newStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode, width: { ideal: preset.width }, height: { ideal: preset.height } },
         audio: false
       });
       const newVideoTrack = newStream.getVideoTracks()[0];
@@ -762,6 +883,12 @@
       e.preventDefault();
     }
   }, { passive: false });
+
+  // Reflect the persisted quality choice in the dropdown.
+  (function syncQualityUI() {
+    const sel = document.getElementById('qualitySelect');
+    if (sel) sel.value = videoQuality;
+  })();
 
   // Auto-resume: if we already broadcast from this browser, skip the
   // setup modal and start with the saved name. The server will reuse

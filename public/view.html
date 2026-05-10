@@ -179,6 +179,31 @@
       padding: 8px 0; line-height: 1.5;
     }
 
+    /* Broadcaster-side camera zoom slider (only shown if supported) */
+    .cam-zoom {
+      margin-top: 10px;
+      padding: 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .cam-zoom-head {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 11px; color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .cam-zoom-val {
+      font-family: 'SF Mono', Menlo, monospace;
+      color: var(--text); font-size: 12px;
+    }
+    .cam-zoom input[type=range] {
+      width: 100%; accent-color: var(--blue);
+    }
+    .cam-zoom-hint {
+      font-size: 10px; color: var(--muted);
+      margin-top: 6px; line-height: 1.4;
+    }
+
     /* Tap-to-talk active state */
     .ttt-btn.talking {
       background: var(--green) !important;
@@ -750,6 +775,17 @@
     }
     const videoOn = currentStreamData.videoEnabled !== false;
     const audioOn = currentStreamData.hasAudio;
+    const cz      = currentStreamData.cameraZoom;
+    const zoomBlock = (cz && cz.max > cz.min) ? `
+      <div class="cam-zoom">
+        <div class="cam-zoom-head">
+          <span>📷 Camera Zoom (broadcaster's lens)</span>
+          <span class="cam-zoom-val" id="camZoomVal">${(+cz.current).toFixed(1)}×</span>
+        </div>
+        <input type="range" id="camZoomSlider"
+               min="${cz.min}" max="${cz.max}" step="${cz.step || 0.1}" value="${cz.current}"/>
+        <div class="cam-zoom-hint">Range ${(+cz.min).toFixed(1)}×–${(+cz.max).toFixed(1)}× — drives the actual camera, not just a CSS scale.</div>
+      </div>` : '';
     c.innerHTML = `
       <div class="ctrl-grid">
         <button class="ctrl-btn" onclick="sendControl('${videoOn ? 'pause_video' : 'resume_video'}')">
@@ -769,6 +805,7 @@
           <span class="ctrl-btn-label">Hold to Talk</span>
         </button>
       </div>
+      ${zoomBlock}
     `;
 
     // Wire up press-and-hold handlers for tap-to-talk
@@ -780,11 +817,26 @@
         ttt.addEventListener(ev, stopTalking)
       );
     }
+
+    // Camera zoom slider — throttled so a drag doesn't flood the server.
+    const camZ = document.getElementById('camZoomSlider');
+    if (camZ) {
+      let pending = null;
+      camZ.addEventListener('input', () => {
+        const v = parseFloat(camZ.value);
+        document.getElementById('camZoomVal').textContent = v.toFixed(1) + '×';
+        if (pending != null) return; // already a tick scheduled
+        pending = setTimeout(() => {
+          pending = null;
+          sendControl('zoom_to', parseFloat(camZ.value));
+        }, 80);
+      });
+    }
   }
 
-  function sendControl(action) {
+  function sendControl(action, value) {
     if (!currentStreamId) return;
-    socket.emit('control:request', { streamId: currentStreamId, action });
+    socket.emit('control:request', { streamId: currentStreamId, action, value });
   }
 
   // ─── Recording ─────────────────────────────────────────────────

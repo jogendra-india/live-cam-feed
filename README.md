@@ -69,6 +69,8 @@ Video flows **directly peer-to-peer** between devices using WebRTC, so latency i
 - 📱 **Mobile-first interface** — open in a phone browser, camera preview is instant; bottom controls auto-compact for narrow screens and swipe-scroll if anything still doesn't fit
 - ⚡ **Auto go-live** — page open = stream available, no extra tap needed
 - 🔁 **Resume on refresh** — name and stream ID are remembered; the broadcaster reconnects on the same key so viewer bookmarks (`?id=…`) keep working. A "Change stream name" button in the ⚙ panel resets it.
+- 🎚 **Quality picker** — Auto (max camera resolution, up to 4K) / 1080p / 720p / 480p, persisted across reloads. The matching encoder bitrate is also pushed to every peer so a 4K stream isn't strangled by the default ~2.5 Mbps WebRTC cap.
+- 🔍 **Native camera zoom (remote)** — when the broadcaster's camera supports `MediaTrackConstraints.zoom` (most modern phone rear cameras), viewers see a Camera Zoom slider in the Remote Control panel that drives the actual lens. Cameras without native zoom (most laptop webcams) hide the slider; the viewer's in-video CSS zoom keeps working as a digital fallback.
 - 🎯 **Multiple simultaneous broadcasters** — each gets a unique 4-character ID and a friendly name
 - 🔄 **Front/rear camera flip** mid-stream, no reconnection
 - 🎙️ **Audio off by default** — broadcaster opts in (no second permission prompt later)
@@ -420,6 +422,7 @@ The server is intentionally lightweight: it brokers the initial handshake (~5 sm
   "hasAudio": true,
   "videoEnabled": true,
   "allowRemoteControl": true,
+  "cameraZoom": { "min": 1, "max": 5, "step": 0.1, "current": 1.5 },
   "viewers": 2,
   "startedAt": 1714386123000,
   "recording": {
@@ -452,7 +455,7 @@ For developers building custom clients on top of the same server.
 |-------|---------|-------------|
 | `broadcaster:register` | `{ name }` | Register stream, callback gets `{ streamId, name }` |
 | `broadcaster:unregister` | — | Remove stream from registry |
-| `broadcaster:state` | `{ hasAudio?, videoEnabled?, allowRemoteControl? }` | Update stream state |
+| `broadcaster:state` | `{ hasAudio?, videoEnabled?, allowRemoteControl?, cameraZoom? }` | Update stream state. `cameraZoom` is `{ min, max, step, current }` or `null`. |
 | `broadcaster:offer` | `{ viewerId, offer }` | WebRTC offer to specific viewer |
 | `broadcaster:ice` | `{ viewerId, candidate }` | ICE candidate |
 | `recording:start` | `{ streamId }` | Start server-side recording |
@@ -471,7 +474,7 @@ For developers building custom clients on top of the same server.
 | `alarm:start` / `alarm:stop` | `{ streamId }` | Trigger alarm on broadcaster |
 | `talkback:state` | `{ streamId, talking }` | Notify broadcaster of mic activity |
 
-Valid `control:request` actions: `pause_video`, `resume_video`, `flip_camera`, `toggle_audio`, `start_recording`, `stop_recording`.
+Valid `control:request` actions: `pause_video`, `resume_video`, `flip_camera`, `toggle_audio`, `start_recording`, `stop_recording`, `zoom_to` (requires numeric `value`).
 
 **Server → Client:**
 

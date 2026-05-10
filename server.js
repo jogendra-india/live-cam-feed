@@ -74,6 +74,7 @@ function publicStream(id, s) {
     hasAudio: s.hasAudio,
     videoEnabled: s.videoEnabled,
     allowRemoteControl: s.allowRemoteControl,
+    cameraZoom: s.cameraZoom || null,
     viewers: s.viewers.size,
     startedAt: s.startedAt,
     recording: s.recording ? {
@@ -253,13 +254,15 @@ io.on("connection", (socket) => {
     broadcastStreamList();
   });
 
-  // Broadcaster reports state changes (audio/video toggled, remote control on/off)
-  socket.on("broadcaster:state", ({ hasAudio, videoEnabled, allowRemoteControl }) => {
+  // Broadcaster reports state changes (audio/video toggled, remote control
+  // on/off, camera-zoom capabilities, etc.)
+  socket.on("broadcaster:state", ({ hasAudio, videoEnabled, allowRemoteControl, cameraZoom }) => {
     const s = streams.get(socket.streamId);
     if (!s) return;
     if (typeof hasAudio === "boolean") s.hasAudio = hasAudio;
     if (typeof videoEnabled === "boolean") s.videoEnabled = videoEnabled;
     if (typeof allowRemoteControl === "boolean") s.allowRemoteControl = allowRemoteControl;
+    if (cameraZoom !== undefined) s.cameraZoom = cameraZoom;
     broadcastStreamList();
     // Tell viewers of this stream too (they may show indicators)
     s.viewers.forEach(vid => io.to(vid).emit("stream:state", publicStream(socket.streamId, s)));
@@ -363,20 +366,20 @@ io.on("connection", (socket) => {
   });
 
   // ── REMOTE CONTROL (viewer → broadcaster) ─────────────────────
-  socket.on("control:request", ({ streamId, action }) => {
+  socket.on("control:request", ({ streamId, action, value }) => {
     streamId = (streamId || "").toUpperCase();
     const s  = streams.get(streamId);
     if (!s) return socket.emit("control:error", { message: "Stream not found" });
     if (!s.allowRemoteControl) return socket.emit("control:error", { message: "Remote control disabled" });
 
-    const allowed = ["pause_video", "resume_video", "flip_camera", "toggle_audio", "start_recording", "stop_recording"];
+    const allowed = ["pause_video", "resume_video", "flip_camera", "toggle_audio", "start_recording", "stop_recording", "zoom_to"];
     if (!allowed.includes(action)) return socket.emit("control:error", { message: "Unknown action" });
 
     // Recording actions go through their dedicated server-side handlers
     if (action === "start_recording") { handleRecordingStart(streamId); return; }
     if (action === "stop_recording")  { finalizeRecording(streamId);    return; }
 
-    io.to(s.socketId).emit("control:apply", { action, requestedBy: socket.id });
+    io.to(s.socketId).emit("control:apply", { action, value, requestedBy: socket.id });
   });
 
   // ── VIEWER ────────────────────────────────────────────────────
