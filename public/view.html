@@ -373,6 +373,96 @@
       text-align: center; line-height: 1.5;
     }
 
+    /* Background-watch counter in the header */
+    .bg-watch-badge {
+      display: none; align-items: center; gap: 6px;
+      padding: 6px 12px; border-radius: 16px;
+      background: rgba(48,209,88,0.15);
+      border: 1px solid var(--green);
+      color: var(--green); font-size: 11px; font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    .bg-watch-badge.show { display: inline-flex; }
+
+    /* Background-detection toasts (top-right of viewport) */
+    .bg-toast-area {
+      position: fixed; top: 76px; right: 20px;
+      display: flex; flex-direction: column; gap: 8px;
+      z-index: 200; max-width: 360px;
+    }
+    .bg-toast {
+      background: rgba(255,59,48,0.95); color: #fff;
+      border-radius: 10px; padding: 10px 14px;
+      font-size: 13px; font-weight: 600;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,255,255,0.15);
+      cursor: pointer;
+      animation: bg-toast-in 0.25s ease-out;
+    }
+    .bg-toast small {
+      display: block; font-size: 11px; font-weight: 400;
+      opacity: 0.85; margin-top: 2px;
+    }
+    @keyframes bg-toast-in {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Wall view (multi-camera grid) */
+    .wall-view {
+      padding: 16px;
+      min-height: calc(100vh - 60px);
+    }
+    .wall-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    }
+    .wall-tile {
+      position: relative;
+      aspect-ratio: 16/9;
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: transform 0.15s, border-color 0.15s;
+    }
+    .wall-tile:hover { transform: translateY(-2px); border-color: var(--blue); }
+    .wall-tile video {
+      width: 100%; height: 100%; object-fit: cover; display: block; background: #000;
+    }
+    .wall-tile-overlay {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      padding: 16px 12px 10px;
+      background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+      pointer-events: none;
+    }
+    .wall-tile-name {
+      font-size: 14px; font-weight: 600; margin-bottom: 4px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .wall-tile-meta {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 11px; color: rgba(255,255,255,0.7);
+      flex-wrap: wrap;
+    }
+    .wall-tile-id {
+      font-family: 'SF Mono', Menlo, monospace; letter-spacing: 0.08em;
+    }
+    .wall-tile-rec   { color: var(--red);   font-weight: 600; }
+    .wall-tile-watch { color: var(--green); font-weight: 600; }
+    .wall-empty {
+      grid-column: 1 / -1;
+      padding: 60px 20px; text-align: center;
+      color: var(--muted); font-size: 14px;
+    }
+    .wall-tile-loading {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      color: var(--muted); font-size: 12px;
+      pointer-events: none;
+    }
+
     @keyframes spin { to { transform: rotate(360deg); } }
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
   </style>
@@ -382,12 +472,24 @@
 <header>
   <div class="logo"><a href="/">LAN<span>-</span>STREAM</a> · Viewer</div>
   <div class="header-right">
+    <span class="bg-watch-badge" id="bgWatchBadge"></span>
+    <button class="btn-link" id="modeToggleBtn" onclick="toggleViewMode()">📡 All feeds</button>
     <a class="btn-link" href="/recordings.html">💾 Recordings</a>
     <a class="btn-link" href="/broadcast.html">📱 Broadcast</a>
   </div>
 </header>
 
-<main>
+<!-- Floating notifications for background detections -->
+<div class="bg-toast-area" id="bgToastArea"></div>
+
+<!-- Wall view (multi-camera grid). Hidden by default. -->
+<div class="wall-view" id="wallView" style="display:none;">
+  <div class="wall-grid" id="wallGrid">
+    <div class="wall-empty">No active streams. Start broadcasting from /broadcast.html.</div>
+  </div>
+</div>
+
+<main id="singleView">
   <!-- VIDEO COLUMN -->
   <div class="video-col">
     <div class="video-wrap" id="videoWrap">
@@ -510,6 +612,12 @@
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" }
   ]};
+  // Declared early because the streams:updated handler reads them on
+  // the first server emit, which can land before the wall-view section
+  // of the script has run (TDZ).
+  let viewMode = 'single';
+  let lastStreamList = [];
+  const wallTiles = new Map();
 
   let socket, pc;
   let currentStreamId = null;
@@ -613,7 +721,19 @@
     if (initialId) watchStream(initialId.toUpperCase());
   });
 
-  socket.on('streams:updated', renderStreamList);
+  socket.on('streams:updated', (streams) => {
+    lastStreamList = streams || [];
+    // Keep the streamId → name map fresh for toast labels and wall view.
+    streamNameById.clear();
+    for (const s of streams) streamNameById.set(s.id, s.name);
+    renderStreamList(streams);
+    // If the user has watching=true for a stream that just came online,
+    // start a background watch for it. If it went offline, the watch
+    // class itself handles the offer drop; we don't need to reconcile
+    // for shutdowns since the mapping (watching=true) didn't change.
+    reconcileBackgroundWatches();
+    if (viewMode === 'wall') refreshWallTiles(streams);
+  });
 
   // Server-shared Teachable Machine model registry. Fires on connect and
   // every time another viewer adds or removes a custom model.
@@ -778,6 +898,10 @@
     }
     // Apply OD prefs (will no-op until detection panel exists).
     applyStreamOdPrefs();
+    // The set of streams that need a background watch just changed
+    // (the new currentStreamId is excluded; the old one may now need
+    // one if its watching=true was preserved).
+    reconcileBackgroundWatches();
     socket.emit('viewer:watch', { streamId: id });
   }
 
@@ -1232,6 +1356,9 @@
         if (res.ok) serverTMList = await res.json();
       } catch (e) { console.warn('TM list fetch:', e); }
       reconcileTMRegistry().catch(err => console.warn('TM reconcile:', err));
+      // Spin up background watches for cameras whose saved state has
+      // watching=true (other than the one currently in the foreground).
+      reconcileBackgroundWatches();
     } catch (e) {
       btn.disabled = false;
       btn.textContent = '⚡ Enable AI Detection';
@@ -1250,6 +1377,7 @@
       document.getElementById('odToggleBtn').textContent = '👁️ Start Watching';
       document.getElementById('odStatus').className = 'od-status';
       document.getElementById('odStatus').textContent = 'Stopped';
+      reconcileBackgroundWatches();
     } else {
       const sel = document.getElementById('odTarget');
       const value = sel ? sel.value : '';
@@ -1267,37 +1395,46 @@
       document.getElementById('odStatus').className = 'od-status';
       document.getElementById('odStatus').textContent = `Looking for ${watchTarget.class}…`;
       detectionInterval = setInterval(runDetection, 1500);
+      reconcileBackgroundWatches();
     }
   }
 
-  async function runDetection() {
-    const video = document.getElementById('stream');
-    if (!watchTarget || !video.videoWidth || video.paused) return;
-
-    const m = models.get(watchTarget.modelId);
-    if (!m) return;
-
-    let detected = false, confidence = 0;
-    const threshold = m.type === 'tm' ? streamTmThreshold(currentStreamId) : streamCocoThreshold(currentStreamId);
+  // Run a single detection pass against a specific <video> for a target.
+  // Used by both the foreground panel and background watches.
+  async function detectOnVideo(videoEl, target, threshold) {
+    if (!videoEl || !videoEl.videoWidth || videoEl.paused) return null;
+    const m = models.get(target.modelId);
+    if (!m) return null;
     try {
       if (m.type === 'coco') {
-        const preds = await m.model.detect(video);
-        const hit = preds.find(p => p.class === watchTarget.class && p.score > threshold);
-        if (hit) { detected = true; confidence = hit.score; }
+        const preds = await m.model.detect(videoEl);
+        const hit = preds.find(p => p.class === target.class && p.score > threshold);
+        return hit ? { detected: true,  confidence: hit.score } : { detected: false, confidence: 0 };
       } else if (m.type === 'tm') {
-        const preds = await m.model.predict(video);
-        const hit = preds.find(p => p.className === watchTarget.class);
-        if (hit && hit.probability > threshold) { detected = true; confidence = hit.probability; }
+        const preds = await m.model.predict(videoEl);
+        const hit = preds.find(p => p.className === target.class);
+        if (hit && hit.probability > threshold) return { detected: true, confidence: hit.probability };
+        return { detected: false, confidence: 0 };
       }
     } catch (e) {
       console.error('Detection error:', e);
-      return;
+      return null;
     }
+    return null;
+  }
+
+  async function runDetection() {
+    if (!watchTarget) return;
+    const m = models.get(watchTarget.modelId);
+    if (!m) return;
+    const threshold = m.type === 'tm' ? streamTmThreshold(currentStreamId) : streamCocoThreshold(currentStreamId);
+    const r = await detectOnVideo(document.getElementById('stream'), watchTarget, threshold);
+    if (r == null) return;
 
     const status = document.getElementById('odStatus');
-    if (detected) {
+    if (r.detected) {
       status.className = 'od-status alert';
-      status.innerHTML = `🚨 DETECTED <strong>${escapeHtml(watchTarget.class)}</strong> at ${Math.round(confidence * 100)}% confidence`;
+      status.innerHTML = `🚨 DETECTED <strong>${escapeHtml(watchTarget.class)}</strong> at ${Math.round(r.confidence * 100)}% confidence`;
       lastDetectionTime = Date.now();
       if (!localAlarmActive) startLocalAlarm();
     } else {
@@ -1308,6 +1445,141 @@
         : '';
       status.textContent = `Looking for ${watchTarget.class}${sinceMsg}`;
     }
+  }
+
+  // ─── Background detection (continues when not currently viewing) ──
+  // For every camera with watching=true that ISN'T the current foreground
+  // stream, we keep a hidden <video> + dedicated socket + RTCPeerConnection
+  // alive and run detection on it. The user can switch cameras, switch
+  // to wall view, etc., and these keep firing alarms / toasts.
+  const backgroundWatches = new Map(); // streamId -> BackgroundWatch
+  const streamNameById = new Map();    // streamId -> display name (for toasts)
+
+  class BackgroundWatch {
+    constructor(streamId) {
+      this.streamId = streamId;
+      this.video = null;
+      this.pc = null;
+      this.bgSocket = null;
+      this.tickTimer = null;
+      this.lastDetectionAt = 0;
+      this._start();
+    }
+    async _start() {
+      this.video = document.createElement('video');
+      this.video.muted = true;
+      this.video.autoplay = true;
+      this.video.playsInline = true;
+      this.video.style.cssText = 'position:absolute;left:-99999px;width:1px;height:1px;pointer-events:none;opacity:0';
+      document.body.appendChild(this.video);
+      this.bgSocket = io();
+      this.bgSocket.on('connect', () => {
+        this.bgSocket.emit('viewer:watch', { streamId: this.streamId });
+      });
+      this.bgSocket.on('viewer:error', () => this.stop());
+      this.bgSocket.on('broadcaster:offline', ({ streamId }) => {
+        if (streamId !== this.streamId) return;
+        // Tear down peer but keep socket — broadcaster might come back
+        // with the same id (preferredStreamId resume).
+        if (this.pc) { this.pc.close(); this.pc = null; }
+        if (this.video) this.video.srcObject = null;
+      });
+      this.bgSocket.on('broadcaster:offer', async ({ offer }) => {
+        try {
+          if (this.pc) { try { this.pc.close(); } catch {} }
+          this.pc = new RTCPeerConnection(ICE);
+          this.pc.onicecandidate = ({ candidate }) => {
+            if (candidate) this.bgSocket.emit('viewer:ice', { candidate });
+          };
+          this.pc.ontrack = ({ streams }) => {
+            this.video.srcObject = streams[0];
+            this.video.play().catch(() => {});
+          };
+          await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
+          const answer = await this.pc.createAnswer();
+          await this.pc.setLocalDescription(answer);
+          this.bgSocket.emit('viewer:answer', { answer });
+        } catch (e) { console.warn('BG offer/answer:', e); }
+      });
+      this.bgSocket.on('broadcaster:ice', ({ candidate }) => {
+        if (this.pc) this.pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+      });
+      this.tickTimer = setInterval(() => this._tick(), 1500);
+    }
+    async _tick() {
+      const sp = viewerPrefs.byStream[this.streamId];
+      if (!sp || !sp.watching || !sp.target) return;
+      const sepIdx = sp.target.indexOf('::');
+      if (sepIdx < 0) return;
+      const target = { modelId: sp.target.slice(0, sepIdx), class: sp.target.slice(sepIdx + 2) };
+      const m = models.get(target.modelId);
+      if (!m) return;
+      const threshold = m.type === 'tm' ? streamTmThreshold(this.streamId) : streamCocoThreshold(this.streamId);
+      const r = await detectOnVideo(this.video, target, threshold);
+      if (!r) return;
+      if (r.detected) {
+        this.lastDetectionAt = Date.now();
+        lastDetectionTime = Date.now();
+        if (!localAlarmActive) startLocalAlarm();
+        const name = streamNameById.get(this.streamId) || this.streamId;
+        showBackgroundDetectionToast(this.streamId, name, target.class, r.confidence);
+      } else if (localAlarmActive && Date.now() - lastDetectionTime > 3000) {
+        stopLocalAlarm();
+      }
+    }
+    stop() {
+      if (this.tickTimer) clearInterval(this.tickTimer);
+      if (this.pc) { try { this.pc.close(); } catch {} }
+      if (this.bgSocket) this.bgSocket.disconnect();
+      if (this.video) this.video.remove();
+    }
+  }
+
+  function reconcileBackgroundWatches() {
+    if (!models.has('coco')) return; // tfjs not loaded yet — no-op
+    const wanted = new Set();
+    for (const [id, sp] of Object.entries(viewerPrefs.byStream)) {
+      if (sp && sp.watching && sp.target && id !== currentStreamId) wanted.add(id);
+    }
+    for (const [id, w] of [...backgroundWatches.entries()]) {
+      if (!wanted.has(id)) { w.stop(); backgroundWatches.delete(id); }
+    }
+    for (const id of wanted) {
+      if (!backgroundWatches.has(id)) backgroundWatches.set(id, new BackgroundWatch(id));
+    }
+    updateBgWatchBadge();
+  }
+
+  function updateBgWatchBadge() {
+    const el = document.getElementById('bgWatchBadge');
+    if (!el) return;
+    const n = backgroundWatches.size;
+    if (n === 0) { el.classList.remove('show'); el.textContent = ''; return; }
+    el.classList.add('show');
+    el.textContent = `👁 +${n} background watch${n === 1 ? '' : 'es'}`;
+  }
+
+  function showBackgroundDetectionToast(streamId, streamName, className, confidence) {
+    const area = document.getElementById('bgToastArea');
+    if (!area) return;
+    let toast = area.querySelector(`[data-stream-id="${CSS.escape(streamId)}"]`);
+    if (toast) {
+      // Already showing — just refresh the auto-fade timer.
+      clearTimeout(toast._fadeTimer);
+      toast._fadeTimer = setTimeout(() => toast.remove(), 8000);
+      return;
+    }
+    toast = document.createElement('div');
+    toast.className = 'bg-toast';
+    toast.dataset.streamId = streamId;
+    toast.innerHTML = `🚨 <strong>${escapeHtml(streamName)}</strong>: ${escapeHtml(className)} (${Math.round(confidence * 100)}%)<small>Tap to switch to this camera</small>`;
+    toast.addEventListener('click', () => {
+      if (viewMode === 'wall') exitWallView();
+      watchStream(streamId);
+      toast.remove();
+    });
+    area.appendChild(toast);
+    toast._fadeTimer = setTimeout(() => toast.remove(), 8000);
   }
 
   // ─── Custom model (Teachable Machine) plumbing ────────────────
@@ -1714,6 +1986,142 @@
 
     applyZoomTransform();
   })();
+
+  // ─── Wall view (multi-camera grid) ────────────────────────────
+  // A second mode of this same page: grid of every active stream as a
+  // live tile. Background watches keep running across mode toggles,
+  // so detection never stops just because the user is browsing the
+  // wall instead of a single feed.
+  // (viewMode / wallTiles / lastStreamList are declared at top of script.)
+  function toggleViewMode() {
+    if (viewMode === 'single') enterWallView();
+    else exitWallView();
+  }
+
+  function enterWallView() {
+    viewMode = 'wall';
+    document.getElementById('singleView').style.display = 'none';
+    document.getElementById('wallView').style.display = 'block';
+    document.getElementById('modeToggleBtn').textContent = '🖥️ Single feed';
+    refreshWallTiles(lastStreamList);
+  }
+
+  function exitWallView() {
+    viewMode = 'single';
+    document.getElementById('wallView').style.display = 'none';
+    document.getElementById('singleView').style.display = '';
+    document.getElementById('modeToggleBtn').textContent = '📡 All feeds';
+    // Tear down tile connections (background watches survive — different objects).
+    for (const [, t] of wallTiles) teardownWallTile(t);
+    wallTiles.clear();
+  }
+
+  function refreshWallTiles(streams) {
+    if (viewMode !== 'wall') return;
+    const grid = document.getElementById('wallGrid');
+    if (!streams || streams.length === 0) {
+      // Tear down any existing
+      for (const [, t] of wallTiles) teardownWallTile(t);
+      wallTiles.clear();
+      grid.innerHTML = '<div class="wall-empty">No active streams. Start broadcasting from /broadcast.html.</div>';
+      return;
+    }
+    // Remove the empty placeholder if present
+    const empty = grid.querySelector('.wall-empty');
+    if (empty) empty.remove();
+
+    const wantedIds = new Set(streams.map(s => s.id));
+
+    // Drop tiles for streams that disappeared
+    for (const [id, t] of [...wallTiles.entries()]) {
+      if (!wantedIds.has(id)) {
+        teardownWallTile(t);
+        wallTiles.delete(id);
+      }
+    }
+
+    // Add or refresh tiles for current streams
+    for (const s of streams) {
+      let entry = wallTiles.get(s.id);
+      if (!entry) {
+        entry = createWallTile(s);
+        wallTiles.set(s.id, entry);
+        grid.appendChild(entry.tile);
+      }
+      // Refresh metadata (REC indicator, viewer count, name)
+      entry.tile.querySelector('.wall-tile-name').textContent = s.name;
+      entry.tile.querySelector('.wall-tile-id').textContent = s.id;
+      const rec = entry.tile.querySelector('.wall-tile-rec');
+      rec.style.display = (s.recording && s.recording.active) ? '' : 'none';
+      entry.tile.querySelector('.wall-tile-viewers').textContent = `👁 ${s.viewers}`;
+      const watch = entry.tile.querySelector('.wall-tile-watch');
+      const sp = viewerPrefs.byStream[s.id];
+      watch.style.display = (sp && sp.watching) ? '' : 'none';
+    }
+  }
+
+  function createWallTile(s) {
+    const tile = document.createElement('div');
+    tile.className = 'wall-tile';
+    tile.dataset.streamId = s.id;
+    tile.innerHTML = `
+      <video autoplay playsinline muted></video>
+      <div class="wall-tile-loading">connecting…</div>
+      <div class="wall-tile-overlay">
+        <div class="wall-tile-name">${escapeHtml(s.name)}</div>
+        <div class="wall-tile-meta">
+          <span class="wall-tile-id">${escapeHtml(s.id)}</span>
+          <span class="wall-tile-rec" style="display:none;">● REC</span>
+          <span class="wall-tile-watch" style="display:none;">👁 watching</span>
+          <span class="wall-tile-viewers">👁 ${s.viewers}</span>
+        </div>
+      </div>`;
+    tile.addEventListener('click', () => {
+      exitWallView();
+      watchStream(s.id);
+    });
+    const video = tile.querySelector('video');
+    const sock  = io();
+    const entry = { tile, video, pc: null, socket: sock };
+    sock.on('connect', () => sock.emit('viewer:watch', { streamId: s.id }));
+    sock.on('viewer:error', () => { tile.querySelector('.wall-tile-loading').textContent = 'unavailable'; });
+    sock.on('broadcaster:offline', ({ streamId }) => {
+      if (streamId !== s.id) return;
+      if (entry.pc) { entry.pc.close(); entry.pc = null; }
+      video.srcObject = null;
+      const ld = tile.querySelector('.wall-tile-loading');
+      ld.textContent = 'broadcaster offline';
+      ld.style.display = '';
+    });
+    sock.on('broadcaster:offer', async ({ offer }) => {
+      try {
+        if (entry.pc) { try { entry.pc.close(); } catch {} }
+        entry.pc = new RTCPeerConnection(ICE);
+        entry.pc.onicecandidate = ({ candidate }) => {
+          if (candidate) sock.emit('viewer:ice', { candidate });
+        };
+        entry.pc.ontrack = ({ streams }) => {
+          video.srcObject = streams[0];
+          video.play().catch(() => {});
+          tile.querySelector('.wall-tile-loading').style.display = 'none';
+        };
+        await entry.pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const ans = await entry.pc.createAnswer();
+        await entry.pc.setLocalDescription(ans);
+        sock.emit('viewer:answer', { answer: ans });
+      } catch (e) { console.warn('Wall tile offer/answer:', e); }
+    });
+    sock.on('broadcaster:ice', ({ candidate }) => {
+      if (entry.pc) entry.pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+    });
+    return entry;
+  }
+
+  function teardownWallTile(t) {
+    try { if (t.pc) t.pc.close(); } catch {}
+    try { if (t.socket) t.socket.disconnect(); } catch {}
+    if (t.tile && t.tile.parentNode) t.tile.parentNode.removeChild(t.tile);
+  }
 
   // Auto-enable AI detection on page load if the user previously opted in,
   // so they don't have to click ⚡ Enable AI Detection on every reload.
