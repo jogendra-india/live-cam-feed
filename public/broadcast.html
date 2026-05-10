@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <title>LAN-STREAM · Broadcast</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --red: #ff3b30; --green: #30d158; --blue: #0a84ff; --yellow: #ffd60a;
+      --bg: #000; --surface: #1c1c1e; --text: #fff;
+      --muted: rgba(255,255,255,0.45); --border: rgba(255,255,255,0.12);
+    }
+    html, body {
+      height: 100%; width: 100%; background: #000; color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+      overflow: hidden; touch-action: manipulation;
+    }
+
+    /* SETUP MODAL */
+    .setup-modal {
+      position: fixed; inset: 0;
+      background: linear-gradient(135deg, #1a1a1f 0%, #0a0a0c 100%);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 32px 24px; z-index: 100;
+      transition: opacity 0.5s;
+    }
+    .setup-modal.hidden { opacity: 0; pointer-events: none; }
+    .setup-icon { font-size: 56px; margin-bottom: 16px; }
+    .setup-title { font-size: 24px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.02em; }
+    .setup-sub { font-size: 14px; color: var(--muted); text-align: center; margin-bottom: 32px; line-height: 1.5; }
+    .setup-input {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      color: #fff; font-size: 16px; padding: 14px 18px; width: 100%; max-width: 320px;
+      margin-bottom: 16px; outline: none; transition: border-color 0.15s;
+      font-family: inherit;
+    }
+    .setup-input:focus { border-color: var(--red); }
+    .setup-btn {
+      background: var(--red); color: #fff; font-size: 16px; font-weight: 600;
+      border: none; border-radius: 12px; padding: 14px 32px;
+      width: 100%; max-width: 320px; cursor: pointer;
+      box-shadow: 0 4px 14px rgba(255,59,48,0.35);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .setup-btn:active { transform: scale(0.97); }
+
+    /* CAMERA */
+    #camera {
+      position: fixed; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; background: #000; transform: scaleX(-1);
+    }
+    #camera.rear { transform: scaleX(1); }
+    #camera.paused { filter: brightness(0.15); }
+
+    /* TOP BAR */
+    .top-bar {
+      position: fixed; top: 0; left: 0; right: 0;
+      padding: env(safe-area-inset-top, 48px) 18px 14px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+      z-index: 10;
+    }
+    .stream-info { display: flex; flex-direction: column; gap: 6px; }
+    .info-row {
+      display: flex; align-items: center; gap: 8px;
+      flex-wrap: wrap;
+    }
+    .live-pill {
+      display: flex; align-items: center; gap: 7px;
+      background: var(--red); border-radius: 6px;
+      padding: 5px 12px; font-size: 13px; font-weight: 700; letter-spacing: 0.06em;
+      opacity: 0; transition: opacity 0.4s;
+    }
+    .live-pill.show { opacity: 1; }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: blink 1.2s infinite; }
+    .id-badge {
+      background: rgba(0,0,0,0.55); border: 1px solid var(--border);
+      border-radius: 6px; padding: 5px 10px; font-size: 12px;
+      font-family: 'SF Mono', Menlo, monospace; letter-spacing: 0.1em;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    }
+    .name-tag {
+      font-size: 13px; font-weight: 600; opacity: 0.92;
+      max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .rec-badge {
+      display: none; align-items: center; gap: 6px;
+      background: rgba(0,0,0,0.65); border: 1px solid var(--red);
+      color: var(--red); border-radius: 6px; padding: 4px 10px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    }
+    .rec-badge.show { display: inline-flex; }
+    .rec-badge::before {
+      content: ''; width: 7px; height: 7px; border-radius: 50%;
+      background: var(--red); animation: blink 1s infinite;
+    }
+    .viewer-badge {
+      background: rgba(0,0,0,0.55); border: 1px solid var(--border);
+      border-radius: 20px; padding: 5px 14px;
+      font-size: 13px; font-weight: 500;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      opacity: 0; transition: opacity 0.4s;
+      flex-shrink: 0;
+    }
+    .viewer-badge.show { opacity: 1; }
+
+    /* Talkback receiving + alarm pills */
+    .extra-pill {
+      display: none; align-items: center; gap: 6px;
+      border-radius: 6px; padding: 5px 10px;
+      font-size: 12px; font-weight: 700; letter-spacing: 0.06em;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    }
+    .extra-pill.show { display: inline-flex; }
+    .talkback-pill { background: var(--green); color: #fff; }
+    .talkback-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: #fff; animation: blink 0.6s infinite; }
+    .alarm-pill { background: var(--red); color: #fff; animation: alarm-shake 0.4s infinite alternate; }
+    .alarm-pill .icon { display: inline-block; animation: alarm-shake 0.2s infinite alternate; }
+    @keyframes alarm-shake {
+      from { transform: translateX(-2px) scale(1); }
+      to   { transform: translateX(2px) scale(1.05); }
+    }
+
+    /* PAUSED OVERLAY */
+    .paused-overlay {
+      position: fixed; inset: 0;
+      display: none; align-items: center; justify-content: center;
+      flex-direction: column; gap: 14px; pointer-events: none;
+      z-index: 5;
+    }
+    .paused-overlay.show { display: flex; }
+    .paused-icon { font-size: 60px; opacity: 0.6; }
+    .paused-text { font-size: 16px; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; }
+
+    /* CONTROLS */
+    .controls {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      padding: 18px 28px calc(env(safe-area-inset-bottom, 0px) + 24px);
+      background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+      z-index: 10;
+    }
+    .ctrl-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    }
+    .icon-btn {
+      width: 50px; height: 50px; border-radius: 50%; border: none;
+      background: rgba(40,40,40,0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      color: #fff; font-size: 20px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      -webkit-tap-highlight-color: transparent; transition: opacity 0.2s;
+      position: relative; flex-shrink: 0;
+    }
+    .icon-btn:active { opacity: 0.6; }
+    .icon-btn:disabled { opacity: 0.25; }
+    .icon-btn.active { background: var(--red); }
+    .icon-btn.audio-on { background: var(--green); }
+
+    /* Record dot indicator on rec button */
+    .icon-btn.recording { background: var(--red); }
+    .icon-btn.recording::after {
+      content: ''; position: absolute; top: 6px; right: 6px;
+      width: 8px; height: 8px; border-radius: 50%; background: #fff;
+      animation: blink 1s infinite;
+    }
+
+    /* MAIN GO LIVE BUTTON */
+    .live-btn {
+      width: 78px; height: 78px; border-radius: 50%; border: 4px solid #fff;
+      background: transparent; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      -webkit-tap-highlight-color: transparent;
+      transition: transform 0.15s;
+    }
+    .live-btn:active { transform: scale(0.92); }
+    .live-inner { width: 54px; height: 54px; border-radius: 50%; background: var(--red); transition: all 0.3s; }
+    .live-btn.live .live-inner { border-radius: 8px; width: 30px; height: 30px; }
+
+    .conn-dot {
+      width: 10px; height: 10px; border-radius: 50%; background: var(--muted);
+      transition: background 0.3s;
+    }
+    .conn-dot.ok  { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .conn-dot.err { background: var(--red); }
+
+    /* LABEL */
+    .ctrl-label {
+      font-size: 9px; color: var(--muted); text-align: center;
+      margin-top: 4px; letter-spacing: 0.1em; text-transform: uppercase;
+      pointer-events: none;
+    }
+
+    .ctrl-group { display: flex; flex-direction: column; align-items: center; gap: 0; }
+
+    /* SETTINGS PANEL */
+    .settings-toggle {
+      position: fixed; top: calc(env(safe-area-inset-top, 48px) + 60px); right: 18px;
+      width: 36px; height: 36px; border-radius: 50%;
+      background: rgba(40,40,40,0.7); border: 1px solid var(--border);
+      color: #fff; font-size: 18px; cursor: pointer;
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      display: flex; align-items: center; justify-content: center;
+      -webkit-tap-highlight-color: transparent;
+      z-index: 11;
+    }
+    .settings-panel {
+      position: fixed; top: calc(env(safe-area-inset-top, 48px) + 100px); right: 18px;
+      background: rgba(20,20,22,0.92); border: 1px solid var(--border);
+      border-radius: 14px; padding: 14px;
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      width: 240px; display: none; z-index: 11;
+    }
+    .settings-panel.show { display: block; }
+    .setting-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 4px;
+    }
+    .setting-label { font-size: 13px; }
+    .switch {
+      position: relative; width: 42px; height: 24px;
+      background: var(--surface); border-radius: 12px;
+      cursor: pointer; transition: background 0.2s;
+    }
+    .switch.on { background: var(--green); }
+    .switch::after {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 20px; height: 20px; border-radius: 50%; background: #fff;
+      transition: transform 0.2s;
+    }
+    .switch.on::after { transform: translateX(18px); }
+
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  </style>
+</head>
+<body>
+
+<!-- SETUP MODAL -->
+<div class="setup-modal" id="setupModal">
+  <div class="setup-icon">📱</div>
+  <div class="setup-title">Set up broadcast</div>
+  <div class="setup-sub">Give your stream a name so viewers can identify it</div>
+  <input class="setup-input" id="streamName" placeholder="e.g. Front Camera, Workshop, Living Room" maxlength="40" autocomplete="off"/>
+  <button class="setup-btn" onclick="initBroadcast()">Continue</button>
+</div>
+
+<video id="camera" autoplay playsinline muted></video>
+
+<!-- Hidden audio sink for receiving viewer talkback. Each viewer track is wired here. -->
+<audio id="talkbackAudio" autoplay playsinline></audio>
+
+<!-- TOP BAR -->
+<div class="top-bar">
+  <div class="stream-info">
+    <div class="info-row">
+      <div class="live-pill" id="livePill"><span class="live-dot"></span> LIVE</div>
+      <div class="id-badge" id="idBadge">—</div>
+    </div>
+    <div class="info-row">
+      <div class="name-tag" id="nameTag">—</div>
+      <div class="rec-badge" id="recBadge">REC</div>
+    </div>
+  </div>
+  <div class="viewer-badge" id="viewerBadge">👁 0</div>
+  <div class="extra-pill talkback-pill" id="talkbackPill"><span class="dot"></span> 🎙️ TALK</div>
+  <div class="extra-pill alarm-pill" id="alarmPill"><span class="icon">🚨</span> ALARM</div>
+</div>
+
+<!-- SETTINGS -->
+<button class="settings-toggle" onclick="toggleSettings()">⚙</button>
+<div class="settings-panel" id="settingsPanel">
+  <div class="setting-row">
+    <span class="setting-label">Allow remote control</span>
+    <div class="switch on" id="rcSwitch" onclick="toggleRemoteControl()"></div>
+  </div>
+  <div class="setting-row">
+    <span class="setting-label">Stream name</span>
+  </div>
+  <div style="padding: 0 4px;">
+    <div style="font-size: 12px; color: var(--muted); word-wrap: break-word;" id="settingsName">—</div>
+  </div>
+</div>
+
+<!-- PAUSED OVERLAY -->
+<div class="paused-overlay" id="pausedOverlay">
+  <div class="paused-icon">📷</div>
+  <div class="paused-text">Camera paused</div>
+</div>
+
+<!-- BOTTOM CONTROLS -->
+<div class="controls">
+  <div class="ctrl-row">
+    <!-- Audio toggle -->
+    <div class="ctrl-group">
+      <button class="icon-btn" id="audioBtn" onclick="toggleAudio()" title="Audio">🔇</button>
+      <div class="ctrl-label">Audio</div>
+    </div>
+
+    <!-- Record -->
+    <div class="ctrl-group">
+      <button class="icon-btn" id="recBtn" onclick="toggleRecording()" title="Record" disabled>⏺</button>
+      <div class="ctrl-label">Record</div>
+    </div>
+
+    <!-- Go Live -->
+    <div class="ctrl-group">
+      <button class="live-btn" id="liveBtn" onclick="toggleBroadcast()">
+        <div class="live-inner"></div>
+      </button>
+      <div class="ctrl-label" style="margin-top: 6px;">
+        <span class="conn-dot" id="connDot"></span>
+      </div>
+    </div>
+
+    <!-- Pause Camera -->
+    <div class="ctrl-group">
+      <button class="icon-btn" id="pauseBtn" onclick="toggleCamera()" title="Pause/Resume">📷</button>
+      <div class="ctrl-label">Pause</div>
+    </div>
+
+    <!-- Flip -->
+    <div class="ctrl-group">
+      <button class="icon-btn" id="flipBtn" onclick="flipCamera()" title="Flip">⟳</button>
+      <div class="ctrl-label">Flip</div>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  // ─── State ─────────────────────────────────────────────────────
+  let socket, localStream, peers = {};
+  let streamId = null, streamName = null;
+  let facingMode = 'user';
+  let isLive = false;
+  let viewerCount = 0;
+  let audioEnabled = false;     // OFF by default
+  let videoEnabled = true;
+  let allowRemoteControl = true;
+  let mediaRecorder = null;
+  let isRecording = false;
+  let userStopped = false; // tracks if user explicitly tapped Stop (prevents auto-restart on reconnect)
+
+  const ICE = { iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" }
+  ]};
+
+  // ─── Setup flow ────────────────────────────────────────────────
+  document.getElementById('streamName').addEventListener('keydown', e => {
+    if (e.key === 'Enter') initBroadcast();
+  });
+
+  async function initBroadcast() {
+    const nameInput = document.getElementById('streamName');
+    streamName = nameInput.value.trim();
+
+    try {
+      // Request camera + mic upfront. Audio track is added but disabled by default.
+      // This avoids a second permission prompt when user toggles audio later.
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+          audio: true
+        });
+        // Mute the audio track immediately
+        localStream.getAudioTracks().forEach(t => t.enabled = false);
+      } catch (audioErr) {
+        // Fallback: video only if user denied audio
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+          audio: false
+        });
+        document.getElementById('audioBtn').disabled = true;
+      }
+
+      const cam = document.getElementById('camera');
+      cam.srcObject = localStream;
+      cam.className = facingMode === 'environment' ? 'rear' : '';
+
+      document.getElementById('setupModal').classList.add('hidden');
+      setTimeout(() => document.getElementById('setupModal').style.display = 'none', 500);
+
+      connectSocket();
+    } catch (e) {
+      alert('Camera error: ' + e.message);
+    }
+  }
+
+  // ─── Socket ────────────────────────────────────────────────────
+  function connectSocket() {
+    socket = io();
+
+    socket.on('connect', () => {
+      document.getElementById('connDot').className = 'conn-dot ok';
+      // Auto go-live the moment we connect, so the stream is immediately
+      // visible to viewers without an extra tap. (Skip if the user already
+      // tapped Stop on this session.)
+      if (!isLive && !userStopped) toggleBroadcast();
+    });
+
+    socket.on('disconnect', () => {
+      document.getElementById('connDot').className = 'conn-dot err';
+    });
+
+    // Viewer joined → create peer
+    socket.on('viewer:joined', async ({ viewerId }) => {
+      if (!isLive) return;
+      viewerCount++;
+      updateViewerBadge();
+      await createPeerForViewer(viewerId);
+    });
+
+    socket.on('viewer:answer', async ({ viewerId, answer }) => {
+      const pc = peers[viewerId];
+      if (pc) await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    });
+
+    socket.on('viewer:ice', ({ viewerId, candidate }) => {
+      const pc = peers[viewerId];
+      if (pc) pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+    });
+
+    socket.on('viewer:left', ({ viewerId }) => {
+      if (peers[viewerId]) { peers[viewerId].close(); delete peers[viewerId]; }
+      viewerCount = Math.max(0, viewerCount - 1);
+      updateViewerBadge();
+    });
+
+    // ─── Recording control from server ─────────────────────────
+    socket.on('recording:start', ({ streamId: sid, filename }) => {
+      startMediaRecorder();
+    });
+
+    socket.on('recording:stop', () => {
+      stopMediaRecorder();
+    });
+
+    socket.on('recording:status', ({ streamId: sid, active }) => {
+      if (sid !== streamId) return;
+      isRecording = active;
+      document.getElementById('recBadge').classList.toggle('show', active);
+      document.getElementById('recBtn').classList.toggle('recording', active);
+    });
+
+    // ─── Remote control from viewers ───────────────────────────
+    socket.on('control:apply', ({ action }) => {
+      if (action === 'pause_video')   setVideoEnabled(false);
+      if (action === 'resume_video')  setVideoEnabled(true);
+      if (action === 'toggle_audio')  toggleAudio();
+      if (action === 'flip_camera')   flipCamera();
+    });
+
+    // ─── Talkback indicator (audio itself flows over WebRTC) ───
+    socket.on('talkback:viewer', ({ talking }) => {
+      document.getElementById('talkbackPill').classList.toggle('show', !!talking);
+    });
+
+    // ─── Remote alarm from viewers ─────────────────────────────
+    socket.on('alarm:incoming', ({ action }) => {
+      if (action === 'start') startAlarm();
+      else if (action === 'stop') stopAlarm();
+    });
+  }
+
+  // ─── Alarm tone generator (Web Audio API two-tone siren) ────
+  let alarmCtx = null, alarmInterval = null, alarmActive = false;
+
+  function startAlarm() {
+    if (alarmActive) return;
+    if (!alarmCtx) {
+      try { alarmCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch (e) { return; }
+    }
+    if (alarmCtx.state === 'suspended') alarmCtx.resume();
+    alarmActive = true;
+    document.getElementById('alarmPill').classList.add('show');
+
+    let toggle = false;
+    const playTone = () => {
+      const osc  = alarmCtx.createOscillator();
+      const gain = alarmCtx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = toggle ? 880 : 660;
+      gain.gain.setValueAtTime(0.0001, alarmCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.35, alarmCtx.currentTime + 0.03);
+      gain.gain.setValueAtTime(0.35, alarmCtx.currentTime + 0.4);
+      gain.gain.exponentialRampToValueAtTime(0.0001, alarmCtx.currentTime + 0.5);
+      osc.connect(gain); gain.connect(alarmCtx.destination);
+      osc.start(); osc.stop(alarmCtx.currentTime + 0.5);
+      toggle = !toggle;
+    };
+    playTone();
+    alarmInterval = setInterval(playTone, 500);
+  }
+
+  function stopAlarm() {
+    alarmActive = false;
+    if (alarmInterval) { clearInterval(alarmInterval); alarmInterval = null; }
+    document.getElementById('alarmPill').classList.remove('show');
+  }
+
+  // ─── Per-viewer peer connection ────────────────────────────────
+  async function createPeerForViewer(viewerId) {
+    const pc = new RTCPeerConnection(ICE);
+    peers[viewerId] = pc;
+    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+    // Pre-allocate a recvonly audio slot so viewers can tap-to-talk back
+    // without renegotiation. From their side this becomes a sendonly transceiver.
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    // When a viewer starts talking, their track arrives here
+    pc.ontrack = (event) => {
+      if (event.track.kind !== 'audio') return;
+      const audioEl = document.getElementById('talkbackAudio');
+      if (!audioEl.srcObject) {
+        audioEl.srcObject = new MediaStream();
+      }
+      audioEl.srcObject.addTrack(event.track);
+      audioEl.play().catch(() => {});
+    };
+
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) socket.emit('broadcaster:ice', { viewerId, candidate });
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('broadcaster:offer', { viewerId, offer });
+  }
+
+  // ─── Toggle Live ───────────────────────────────────────────────
+  function toggleBroadcast() {
+    if (!isLive) {
+      userStopped = false;
+      // Register with server NOW (not on socket connect) — this is the moment
+      // the stream becomes visible to viewers and peer connections start working.
+      socket.emit('broadcaster:register', { name: streamName }, ({ streamId: id, name }) => {
+        streamId = id;
+        streamName = name;
+        document.getElementById('idBadge').textContent = id;
+        document.getElementById('nameTag').textContent = name;
+        document.getElementById('settingsName').textContent = name;
+        isLive = true;
+        document.getElementById('liveBtn').classList.add('live');
+        document.getElementById('livePill').classList.add('show');
+        document.getElementById('viewerBadge').classList.add('show');
+        document.getElementById('recBtn').disabled = false;
+      });
+    } else {
+      isLive = false;
+      userStopped = true;
+      Object.values(peers).forEach(pc => pc.close());
+      peers = {};
+      viewerCount = 0;
+      if (isRecording) socket.emit('recording:stop', { streamId });
+      socket.emit('broadcaster:unregister');
+      streamId = null;
+      document.getElementById('idBadge').textContent = '—';
+      document.getElementById('liveBtn').classList.remove('live');
+      document.getElementById('livePill').classList.remove('show');
+      document.getElementById('viewerBadge').classList.remove('show');
+      document.getElementById('recBtn').disabled = true;
+      updateViewerBadge();
+    }
+  }
+
+  // ─── Audio toggle (off by default) ─────────────────────────────
+  function toggleAudio() {
+    if (!localStream || localStream.getAudioTracks().length === 0) return;
+    audioEnabled = !audioEnabled;
+    localStream.getAudioTracks().forEach(t => t.enabled = audioEnabled);
+    const btn = document.getElementById('audioBtn');
+    btn.textContent = audioEnabled ? '🎙️' : '🔇';
+    btn.classList.toggle('audio-on', audioEnabled);
+    socket.emit('broadcaster:state', { hasAudio: audioEnabled });
+  }
+
+  // ─── Camera pause/resume ───────────────────────────────────────
+  function toggleCamera() {
+    setVideoEnabled(!videoEnabled);
+  }
+
+  function setVideoEnabled(enabled) {
+    if (!localStream) return;
+    videoEnabled = enabled;
+    localStream.getVideoTracks().forEach(t => t.enabled = enabled);
+    document.getElementById('camera').classList.toggle('paused', !enabled);
+    document.getElementById('pausedOverlay').classList.toggle('show', !enabled);
+    document.getElementById('pauseBtn').classList.toggle('active', !enabled);
+    document.getElementById('pauseBtn').textContent = enabled ? '📷' : '📵';
+    if (socket) socket.emit('broadcaster:state', { videoEnabled: enabled });
+  }
+
+  // ─── Flip camera ───────────────────────────────────────────────
+  async function flipCamera() {
+    if (!localStream) return;
+    facingMode = facingMode === 'user' ? 'environment' : 'user';
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      const newVideoTrack = newStream.getVideoTracks()[0];
+
+      // Replace track in localStream
+      const oldVideoTrack = localStream.getVideoTracks()[0];
+      localStream.removeTrack(oldVideoTrack);
+      oldVideoTrack.stop();
+      localStream.addTrack(newVideoTrack);
+
+      const cam = document.getElementById('camera');
+      cam.srcObject = localStream;
+      cam.className = facingMode === 'environment' ? 'rear' : '';
+
+      // Replace track in all peer connections (no renegotiation needed)
+      Object.values(peers).forEach(pc => {
+        const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(newVideoTrack);
+      });
+
+      // If recording, MediaRecorder keeps going on the original stream object
+      // since we replaced the track in-place
+    } catch (e) {
+      console.error('Flip failed:', e);
+    }
+  }
+
+  // ─── Recording ─────────────────────────────────────────────────
+  function toggleRecording() {
+    if (!isLive) return;
+    if (isRecording) {
+      socket.emit('recording:stop', { streamId });
+    } else {
+      socket.emit('recording:start', { streamId });
+    }
+  }
+
+  function startMediaRecorder() {
+    if (!localStream || mediaRecorder) return;
+    const mimeOptions = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm'
+    ];
+    let mimeType = '';
+    for (const m of mimeOptions) {
+      if (MediaRecorder.isTypeSupported(m)) { mimeType = m; break; }
+    }
+
+    try {
+      mediaRecorder = new MediaRecorder(localStream, mimeType ? { mimeType } : undefined);
+    } catch (e) {
+      console.error('MediaRecorder failed:', e);
+      return;
+    }
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        // Send as ArrayBuffer (Socket.io handles binary natively)
+        e.data.arrayBuffer().then(buf => {
+          socket.emit('recording:chunk', { streamId, chunk: buf });
+        });
+      }
+    };
+
+    mediaRecorder.onstop = () => {
+      mediaRecorder = null;
+    };
+
+    mediaRecorder.start(1000); // chunk every 1 second
+  }
+
+  function stopMediaRecorder() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+  }
+
+  // ─── Settings ──────────────────────────────────────────────────
+  function toggleSettings() {
+    document.getElementById('settingsPanel').classList.toggle('show');
+  }
+
+  function toggleRemoteControl() {
+    allowRemoteControl = !allowRemoteControl;
+    document.getElementById('rcSwitch').classList.toggle('on', allowRemoteControl);
+    if (socket) socket.emit('broadcaster:state', { allowRemoteControl });
+  }
+
+  // ─── UI ────────────────────────────────────────────────────────
+  function updateViewerBadge() {
+    document.getElementById('viewerBadge').textContent =
+      `👁 ${viewerCount} viewer${viewerCount !== 1 ? 's' : ''}`;
+  }
+
+  // Prevent edge-swipe back navigation
+  document.addEventListener('touchstart', e => {
+    if (e.touches[0].clientX < 20 || e.touches[0].clientX > window.innerWidth - 20) {
+      e.preventDefault();
+    }
+  }, { passive: false });
+</script>
+</body>
+</html>

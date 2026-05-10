@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>LAN-STREAM · Viewer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0a0a0c; --surface: #16161a; --surface-2: #1f1f24;
+      --border: rgba(255,255,255,0.08);
+      --text: #fff; --muted: rgba(255,255,255,0.5);
+      --red: #ff3b30; --blue: #0a84ff; --green: #30d158; --yellow: #ffd60a;
+    }
+    html, body {
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+      min-height: 100vh; overflow-x: hidden;
+    }
+
+    /* HEADER */
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 20px; border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-wrap: wrap; gap: 12px;
+    }
+    .logo { font-size: 17px; font-weight: 700; }
+    .logo span { color: var(--red); }
+    .logo a { color: inherit; text-decoration: none; }
+    .header-right { display: flex; gap: 8px; align-items: center; }
+    .btn-link {
+      padding: 7px 14px; border-radius: 18px; font-size: 12px; font-weight: 500;
+      border: 1px solid var(--border); background: transparent; color: var(--text);
+      text-decoration: none; cursor: pointer;
+    }
+    .btn-link:hover { background: var(--surface-2); }
+
+    /* MAIN GRID */
+    main {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 0;
+      min-height: calc(100vh - 60px);
+    }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+    /* VIDEO COLUMN */
+    .video-col { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+    .video-wrap {
+      position: relative; aspect-ratio: 16/9;
+      background: #000; border: 1px solid var(--border); border-radius: 12px;
+      overflow: hidden;
+    }
+    video {
+      width: 100%; height: 100%; object-fit: contain; display: block; background: #000;
+    }
+    /* Waiting / status overlay */
+    .waiting {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 14px; background: rgba(0,0,0,0.92);
+      transition: opacity 0.5s;
+    }
+    .waiting.hidden { opacity: 0; pointer-events: none; }
+    .spinner {
+      width: 48px; height: 48px; border: 3px solid rgba(255,255,255,0.1);
+      border-top-color: var(--blue); border-radius: 50%; animation: spin 0.9s linear infinite;
+    }
+    .spinner.hidden { display: none; }
+    .wait-icon { font-size: 48px; opacity: 0.4; display: none; }
+    .wait-icon.show { display: block; }
+    .wait-title { font-size: 18px; font-weight: 600; }
+    .wait-sub { font-size: 13px; color: var(--muted); text-align: center; max-width: 320px; line-height: 1.5; }
+
+    /* HUD on top of video */
+    .hud-top {
+      position: absolute; top: 12px; left: 12px; right: 12px;
+      display: flex; justify-content: space-between; align-items: flex-start;
+      pointer-events: none;
+    }
+    .live-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--red); padding: 4px 10px; border-radius: 6px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+      opacity: 0; transition: opacity 0.4s;
+    }
+    .live-pill.show { opacity: 1; }
+    .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #fff; animation: blink 1.2s infinite; }
+    .rec-pill {
+      display: none; align-items: center; gap: 6px;
+      background: rgba(0,0,0,0.65); border: 1px solid var(--red); color: var(--red);
+      padding: 4px 10px; border-radius: 6px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      margin-left: 8px;
+    }
+    .rec-pill.show { display: inline-flex; }
+    .rec-pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--red); animation: blink 1s infinite; }
+
+    /* Bottom playback bar */
+    .player-bar {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    .icon-btn {
+      width: 40px; height: 40px; border-radius: 50%;
+      border: 1px solid var(--border); background: var(--surface);
+      color: #fff; font-size: 16px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s;
+    }
+    .icon-btn:hover { background: var(--surface-2); }
+    .icon-btn.active { background: var(--red); border-color: var(--red); }
+    .icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    .vol-control { display: flex; align-items: center; gap: 8px; }
+    input[type=range] { accent-color: var(--blue); width: 120px; }
+
+    .stream-meta {
+      display: flex; align-items: center; gap: 14px;
+      font-size: 13px; color: var(--muted); flex-wrap: wrap;
+    }
+    .stream-name { font-size: 17px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; }
+
+    /* SIDEBAR */
+    .sidebar {
+      border-left: 1px solid var(--border); background: var(--surface);
+      padding: 20px; display: flex; flex-direction: column; gap: 18px;
+      max-height: calc(100vh - 60px); overflow-y: auto;
+    }
+    @media (max-width: 900px) { .sidebar { border-left: none; border-top: 1px solid var(--border); } }
+
+    .panel {
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px;
+    }
+    .panel-title {
+      font-size: 11px; color: var(--muted); letter-spacing: 0.15em;
+      text-transform: uppercase; margin-bottom: 12px; font-weight: 600;
+    }
+
+    /* Stream picker */
+    .stream-list { display: flex; flex-direction: column; gap: 6px; }
+    .stream-item {
+      background: var(--bg); border: 1px solid transparent;
+      border-radius: 8px; padding: 10px 12px; cursor: pointer;
+      display: flex; align-items: center; justify-content: space-between;
+      transition: border-color 0.15s;
+    }
+    .stream-item:hover { border-color: var(--border); }
+    .stream-item.active { border-color: var(--blue); background: rgba(10,132,255,0.08); }
+    .stream-item-name { font-size: 13px; font-weight: 500; }
+    .stream-item-id { font-family: 'SF Mono', Menlo, monospace; font-size: 11px; color: var(--muted); }
+
+    /* Remote control buttons */
+    .ctrl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .ctrl-btn {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px;
+      color: #fff; font-size: 12px; cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      transition: background 0.15s;
+    }
+    .ctrl-btn:hover:not(:disabled) { background: var(--surface); }
+    .ctrl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .ctrl-btn-icon { font-size: 18px; }
+    .ctrl-btn-label { font-size: 10px; color: var(--muted); letter-spacing: 0.05em; }
+    .ctrl-disabled-msg {
+      font-size: 11px; color: var(--muted); text-align: center;
+      padding: 8px 0; line-height: 1.5;
+    }
+
+    /* Tap-to-talk active state */
+    .ttt-btn.talking {
+      background: var(--green) !important;
+      border-color: var(--green) !important;
+      box-shadow: 0 0 12px rgba(48,209,88,0.5);
+    }
+
+    /* Alarm panel */
+    .alarm-btn {
+      width: 100%; padding: 12px; border-radius: 8px; border: none;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      background: var(--red); color: #fff;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      transition: background 0.15s;
+    }
+    .alarm-btn.active { background: #555; }
+    .alarm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Object detection */
+    .od-select {
+      width: 100%; padding: 8px 10px; border-radius: 8px;
+      background: var(--bg); color: #fff; border: 1px solid var(--border);
+      font-size: 13px; margin-bottom: 8px;
+      font-family: inherit;
+    }
+    .od-status {
+      font-size: 12px; line-height: 1.5;
+      padding: 8px 10px; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 8px;
+      margin-top: 8px;
+    }
+    .od-status.alert {
+      background: rgba(255,59,48,0.12);
+      border-color: var(--red);
+      color: var(--red);
+      font-weight: 600;
+    }
+    .detection-overlay {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+
+    /* Recording panel */
+    .rec-row {
+      display: flex; align-items: center; gap: 10px;
+    }
+    .rec-button {
+      flex: 1; padding: 10px; border-radius: 8px; border: none;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      background: var(--red); color: #fff;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .rec-button.recording { background: #555; }
+    .rec-button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .rec-time {
+      font-family: 'SF Mono', Menlo, monospace;
+      font-size: 14px; color: var(--red); display: none;
+    }
+    .rec-time.show { display: block; }
+
+    /* Stats */
+    .stat-row {
+      display: flex; justify-content: space-between;
+      padding: 5px 0; font-size: 12px;
+    }
+    .stat-label { color: var(--muted); }
+    .stat-val { font-family: 'SF Mono', Menlo, monospace; }
+    .stat-val.green { color: var(--green); }
+
+    /* Empty / no stream */
+    .picker-empty {
+      font-size: 12px; color: var(--muted); padding: 8px;
+      text-align: center; line-height: 1.5;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><a href="/">LAN<span>-</span>STREAM</a> · Viewer</div>
+  <div class="header-right">
+    <a class="btn-link" href="/recordings.html">💾 Recordings</a>
+    <a class="btn-link" href="/broadcast.html">📱 Broadcast</a>
+  </div>
+</header>
+
+<main>
+  <!-- VIDEO COLUMN -->
+  <div class="video-col">
+    <div class="video-wrap">
+      <video id="stream" autoplay playsinline muted></video>
+      <canvas id="detectionCanvas" class="detection-overlay"></canvas>
+
+      <div class="hud-top">
+        <span>
+          <span class="live-pill" id="livePill"><span class="live-dot"></span> LIVE</span>
+          <span class="rec-pill" id="recPill">REC</span>
+        </span>
+      </div>
+
+      <div class="waiting" id="waiting">
+        <div class="spinner" id="spinner"></div>
+        <div class="wait-icon" id="waitIcon">📡</div>
+        <div class="wait-title" id="waitTitle">Select a stream</div>
+        <div class="wait-sub" id="waitSub">Pick from the list on the right →</div>
+      </div>
+    </div>
+
+    <div class="player-bar">
+      <button class="icon-btn" onclick="toggleMute()" id="muteBtn" title="Mute">🔇</button>
+      <div class="vol-control">
+        <input type="range" min="0" max="1" step="0.05" value="0" id="volSlider"/>
+      </div>
+      <button class="icon-btn" onclick="snapshot()" title="Snapshot">📸</button>
+      <button class="icon-btn" onclick="togglePiP()" title="Picture-in-Picture">⊞</button>
+      <button class="icon-btn" onclick="fullscreen()" title="Fullscreen">⛶</button>
+      <div style="margin-left:auto"></div>
+      <div class="stream-meta">
+        <span id="streamName" class="stream-name">—</span>
+        <span id="viewerCount">👁 —</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+
+    <!-- Stream picker -->
+    <div class="panel">
+      <div class="panel-title">📡 Live Streams</div>
+      <div class="stream-list" id="streamList">
+        <div class="picker-empty">No streams active</div>
+      </div>
+    </div>
+
+    <!-- Remote Control -->
+    <div class="panel">
+      <div class="panel-title">🎛 Remote Control</div>
+      <div id="rcContent">
+        <div class="ctrl-disabled-msg">Connect to a stream first</div>
+      </div>
+    </div>
+
+    <!-- Recording -->
+    <div class="panel">
+      <div class="panel-title">⏺ Server Recording</div>
+      <div class="rec-row">
+        <button class="rec-button" id="recButton" onclick="toggleRecording()" disabled>
+          ⏺ Start Recording
+        </button>
+        <div class="rec-time" id="recTime">00:00</div>
+      </div>
+      <div class="ctrl-disabled-msg" id="recHint" style="margin-top: 8px;">
+        Recordings save to the server and are available in the Recordings page.
+      </div>
+    </div>
+
+    <!-- Remote Alarm -->
+    <div class="panel">
+      <div class="panel-title">🚨 Remote Alarm</div>
+      <button class="alarm-btn" id="alarmBtn" onclick="toggleRemoteAlarm()" disabled>
+        🚨 Sound Alarm on Broadcaster
+      </button>
+      <div class="ctrl-disabled-msg" style="margin-top: 8px;">
+        Plays a siren on the broadcaster's device until you tap stop.
+      </div>
+    </div>
+
+    <!-- Object Detection -->
+    <div class="panel">
+      <div class="panel-title">🎯 Object Detection</div>
+      <div id="odContent">
+        <button class="alarm-btn" style="background: var(--blue);" onclick="enableDetection()" id="odEnableBtn">
+          ⚡ Enable AI Detection
+        </button>
+        <div class="ctrl-disabled-msg" style="margin-top: 8px;">
+          Loads a ~5MB AI model that detects 80 common objects (dog, cat, person, car…) and rings a local alarm when found.
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="panel">
+      <div class="panel-title">📊 Connection</div>
+      <div class="stat-row"><span class="stat-label">P2P State</span><span class="stat-val" id="statState">—</span></div>
+      <div class="stat-row"><span class="stat-label">Resolution</span><span class="stat-val" id="statRes">—</span></div>
+      <div class="stat-row"><span class="stat-label">Frame Rate</span><span class="stat-val" id="statFps">—</span></div>
+      <div class="stat-row"><span class="stat-label">Bitrate</span><span class="stat-val green" id="statBitrate">—</span></div>
+    </div>
+
+  </div>
+</main>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  // ─── State ─────────────────────────────────────────────────────
+  const ICE = { iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" }
+  ]};
+
+  let socket, pc;
+  let currentStreamId = null;
+  let currentStreamData = null;
+  let isRecording = false;
+  let recordingStartedAt = 0;
+  let recTimer = null;
+  let statsTimer = null;
+  let lastBytes = 0, lastTs = 0;
+
+  // Tap-to-talk
+  let micTransceiver = null;
+  let micStream = null;
+
+  // Remote alarm (sent to broadcaster)
+  let remoteAlarmActive = false;
+
+  // Local alarm context (used by object detection)
+  let localAlarmCtx = null, localAlarmInterval = null, localAlarmActive = false;
+
+  // Object detection
+  let cocoModel = null;
+  let detectionInterval = null;
+  let detectionTarget = null;
+  let detectionEnabled = false;
+  let lastDetectionTime = 0;
+
+  // Read ?id=XXXX from URL
+  const params = new URLSearchParams(location.search);
+  const initialId = params.get('id');
+
+  // ─── Socket setup ──────────────────────────────────────────────
+  socket = io();
+
+  socket.on('connect', () => {
+    if (initialId) watchStream(initialId.toUpperCase());
+  });
+
+  socket.on('streams:updated', renderStreamList);
+
+  socket.on('viewer:error', ({ message, streamId }) => {
+    setWaiting('icon', '⚠️', `Stream ${streamId || ''} not available. Pick another from the list.`);
+  });
+
+  socket.on('broadcaster:offline', ({ streamId }) => {
+    if (streamId === currentStreamId) {
+      setWaiting('icon', '📡', 'Broadcaster has gone offline.');
+      cleanupPeer();
+      currentStreamId = null;
+      currentStreamData = null;
+      updateRcPanel();
+    }
+  });
+
+  socket.on('broadcaster:offer', async ({ offer, broadcasterSocketId }) => {
+    setWaiting('spin', 'Establishing P2P…', 'Negotiating direct connection…');
+    cleanupPeer();
+    pc = new RTCPeerConnection(ICE);
+
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) socket.emit('viewer:ice', { candidate });
+    };
+    pc.ontrack = ({ streams }) => {
+      const v = document.getElementById('stream');
+      v.srcObject = streams[0];
+      v.play().catch(() => {});
+      hideWaiting();
+      const vt = streams[0].getVideoTracks()[0];
+      if (vt) {
+        const s = vt.getSettings();
+        document.getElementById('statRes').textContent = `${s.width}×${s.height}`;
+      }
+      startStats();
+    };
+    pc.onconnectionstatechange = () => {
+      document.getElementById('statState').textContent = pc.connectionState;
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        setTimeout(() => {
+          if (currentStreamId) socket.emit('viewer:watch', { streamId: currentStreamId });
+        }, 2000);
+      }
+    };
+
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit('viewer:answer', { answer });
+
+    // The broadcaster's recvonly audio transceiver shows up here as sendonly.
+    // We'll later replaceTrack on its sender to push our mic audio for tap-to-talk.
+    micTransceiver = pc.getTransceivers().find(t => t.direction === 'sendonly') || null;
+    document.getElementById('alarmBtn').disabled = false;
+  });
+
+  socket.on('broadcaster:ice', ({ candidate }) => {
+    if (pc) pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+  });
+
+  socket.on('stream:state', (data) => {
+    if (data.id === currentStreamId) {
+      currentStreamData = data;
+      updateRcPanel();
+      document.getElementById('streamName').textContent = data.name;
+      document.getElementById('viewerCount').textContent = `👁 ${data.viewers}`;
+    }
+  });
+
+  socket.on('recording:status', ({ streamId, active, duration, bytes }) => {
+    if (streamId !== currentStreamId) return;
+    isRecording = active;
+    document.getElementById('recButton').classList.toggle('recording', active);
+    document.getElementById('recButton').textContent = active ? '■ Stop Recording' : '⏺ Start Recording';
+    document.getElementById('recPill').classList.toggle('show', active);
+    document.getElementById('recTime').classList.toggle('show', active);
+    if (active) {
+      recordingStartedAt = Date.now();
+      startRecTimer();
+    } else {
+      stopRecTimer();
+    }
+  });
+
+  socket.on('control:error', ({ message }) => {
+    alert('Control error: ' + message);
+  });
+
+  // ─── Stream picker ─────────────────────────────────────────────
+  function renderStreamList(streams) {
+    const list = document.getElementById('streamList');
+    if (streams.length === 0) {
+      list.innerHTML = `<div class="picker-empty">No streams active</div>`;
+      return;
+    }
+    list.innerHTML = '';
+    streams.forEach(s => {
+      const item = document.createElement('div');
+      item.className = 'stream-item' + (s.id === currentStreamId ? ' active' : '');
+      item.onclick = () => watchStream(s.id);
+      item.innerHTML = `
+        <div>
+          <div class="stream-item-name">${escapeHtml(s.name)} ${s.recording?.active ? '<span style="color:var(--red)">● REC</span>' : ''}</div>
+          <div class="stream-item-id">${s.id} · 👁 ${s.viewers}</div>
+        </div>
+        ${s.id === currentStreamId ? '<span style="color:var(--blue)">▶</span>' : ''}
+      `;
+      list.appendChild(item);
+    });
+    // Update current stream's data
+    const me = streams.find(s => s.id === currentStreamId);
+    if (me) {
+      currentStreamData = me;
+      updateRcPanel();
+      document.getElementById('streamName').textContent = me.name;
+      document.getElementById('viewerCount').textContent = `👁 ${me.viewers}`;
+    }
+  }
+
+  function watchStream(id) {
+    if (id === currentStreamId) return;
+    currentStreamId = id;
+    history.replaceState(null, '', `?id=${id}`);
+    setWaiting('spin', 'Connecting…', `Joining stream ${id}…`);
+    document.getElementById('recButton').disabled = false;
+    socket.emit('viewer:watch', { streamId: id });
+  }
+
+  // ─── Remote control panel ─────────────────────────────────────
+  function updateRcPanel() {
+    const c = document.getElementById('rcContent');
+    if (!currentStreamData) {
+      c.innerHTML = '<div class="ctrl-disabled-msg">Connect to a stream first</div>';
+      return;
+    }
+    if (!currentStreamData.allowRemoteControl) {
+      c.innerHTML = '<div class="ctrl-disabled-msg">Broadcaster has disabled remote control</div>';
+      return;
+    }
+    const videoOn = currentStreamData.videoEnabled !== false;
+    const audioOn = currentStreamData.hasAudio;
+    c.innerHTML = `
+      <div class="ctrl-grid">
+        <button class="ctrl-btn" onclick="sendControl('${videoOn ? 'pause_video' : 'resume_video'}')">
+          <span class="ctrl-btn-icon">${videoOn ? '⏸' : '▶'}</span>
+          <span class="ctrl-btn-label">${videoOn ? 'Pause Camera' : 'Resume'}</span>
+        </button>
+        <button class="ctrl-btn" onclick="sendControl('toggle_audio')">
+          <span class="ctrl-btn-icon">${audioOn ? '🎙️' : '🔇'}</span>
+          <span class="ctrl-btn-label">${audioOn ? 'Mute Mic' : 'Enable Mic'}</span>
+        </button>
+        <button class="ctrl-btn" onclick="sendControl('flip_camera')">
+          <span class="ctrl-btn-icon">⟳</span>
+          <span class="ctrl-btn-label">Flip Camera</span>
+        </button>
+        <button class="ctrl-btn ttt-btn" id="tttBtn">
+          <span class="ctrl-btn-icon">🎙️</span>
+          <span class="ctrl-btn-label">Hold to Talk</span>
+        </button>
+      </div>
+    `;
+
+    // Wire up press-and-hold handlers for tap-to-talk
+    const ttt = document.getElementById('tttBtn');
+    if (ttt) {
+      ttt.addEventListener('mousedown',  startTalking);
+      ttt.addEventListener('touchstart', startTalking, { passive: true });
+      ['mouseup','mouseleave','touchend','touchcancel'].forEach(ev =>
+        ttt.addEventListener(ev, stopTalking)
+      );
+    }
+  }
+
+  function sendControl(action) {
+    if (!currentStreamId) return;
+    socket.emit('control:request', { streamId: currentStreamId, action });
+  }
+
+  // ─── Recording ─────────────────────────────────────────────────
+  function toggleRecording() {
+    if (!currentStreamId) return;
+    if (isRecording) {
+      socket.emit('recording:stop', { streamId: currentStreamId });
+    } else {
+      socket.emit('recording:start', { streamId: currentStreamId });
+    }
+  }
+
+  function startRecTimer() {
+    stopRecTimer();
+    recTimer = setInterval(() => {
+      const s = Math.floor((Date.now() - recordingStartedAt) / 1000);
+      const mm = String(Math.floor(s / 60)).padStart(2, '0');
+      const ss = String(s % 60).padStart(2, '0');
+      document.getElementById('recTime').textContent = `${mm}:${ss}`;
+    }, 1000);
+  }
+  function stopRecTimer() { if (recTimer) { clearInterval(recTimer); recTimer = null; } }
+
+  // ─── Player controls ───────────────────────────────────────────
+  document.getElementById('volSlider').addEventListener('input', (e) => {
+    const v = document.getElementById('stream');
+    v.volume = parseFloat(e.target.value);
+    v.muted = v.volume === 0;
+    document.getElementById('muteBtn').textContent = v.muted ? '🔇' : '🔊';
+  });
+
+  function toggleMute() {
+    const v = document.getElementById('stream');
+    v.muted = !v.muted;
+    document.getElementById('muteBtn').textContent = v.muted ? '🔇' : '🔊';
+  }
+
+  function fullscreen() {
+    const v = document.getElementById('stream');
+    if (!document.fullscreenElement) (v.requestFullscreen || v.webkitRequestFullscreen).call(v);
+    else (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  }
+
+  async function togglePiP() {
+    const v = document.getElementById('stream');
+    try {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture();
+      else await v.requestPictureInPicture();
+    } catch (e) { console.error(e); }
+  }
+
+  function snapshot() {
+    const v = document.getElementById('stream');
+    if (!v.srcObject) return;
+    const c = document.createElement('canvas');
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext('2d').drawImage(v, 0, 0);
+    c.toBlob((blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `snapshot-${currentStreamId || 'stream'}-${Date.now()}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }, 'image/png');
+  }
+
+  // ─── Stats polling ─────────────────────────────────────────────
+  function startStats() {
+    if (statsTimer) clearInterval(statsTimer);
+    statsTimer = setInterval(async () => {
+      if (!pc) return;
+      const stats = await pc.getStats();
+      stats.forEach(report => {
+        if (report.type === 'inbound-rtp' && report.kind === 'video') {
+          if (report.framesPerSecond != null) {
+            document.getElementById('statFps').textContent = Math.round(report.framesPerSecond);
+          }
+          const now = report.timestamp || Date.now();
+          if (lastTs && report.bytesReceived) {
+            const kbps = ((report.bytesReceived - lastBytes) * 8) / (now - lastTs);
+            document.getElementById('statBitrate').textContent = kbps.toFixed(0) + ' kbps';
+          }
+          lastBytes = report.bytesReceived || 0;
+          lastTs = now;
+        }
+      });
+    }, 1500);
+  }
+
+  // ─── UI helpers ────────────────────────────────────────────────
+  function setWaiting(type, title, sub) {
+    document.getElementById('waiting').classList.remove('hidden');
+    document.getElementById('spinner').className = type === 'spin' ? 'spinner' : 'spinner hidden';
+    document.getElementById('waitIcon').className = type === 'icon' ? 'wait-icon show' : 'wait-icon';
+    document.getElementById('waitTitle').textContent = title;
+    document.getElementById('waitSub').textContent = sub;
+    document.getElementById('livePill').classList.remove('show');
+  }
+  function hideWaiting() {
+    document.getElementById('waiting').classList.add('hidden');
+    document.getElementById('livePill').classList.add('show');
+  }
+
+  function cleanupPeer() {
+    if (pc) { pc.close(); pc = null; }
+    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+    document.getElementById('stream').srcObject = null;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ─── Tap-to-talk ───────────────────────────────────────────────
+  async function startTalking() {
+    if (!micTransceiver) {
+      console.warn('No talkback channel — broadcaster may need to reload');
+      return;
+    }
+    try {
+      if (!micStream) {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+      const track = micStream.getAudioTracks()[0];
+      if (track) {
+        track.enabled = true;
+        await micTransceiver.sender.replaceTrack(track);
+        const btn = document.getElementById('tttBtn');
+        if (btn) btn.classList.add('talking');
+        socket.emit('talkback:state', { streamId: currentStreamId, talking: true });
+      }
+    } catch (e) {
+      console.error('Talk failed:', e);
+    }
+  }
+
+  function stopTalking() {
+    if (!micTransceiver) return;
+    micTransceiver.sender.replaceTrack(null).catch(() => {});
+    const btn = document.getElementById('tttBtn');
+    if (btn) btn.classList.remove('talking');
+    socket.emit('talkback:state', { streamId: currentStreamId, talking: false });
+  }
+
+  // ─── Remote alarm (siren on broadcaster) ───────────────────────
+  function toggleRemoteAlarm() {
+    if (!currentStreamId) return;
+    const btn = document.getElementById('alarmBtn');
+    if (!remoteAlarmActive) {
+      remoteAlarmActive = true;
+      socket.emit('alarm:start', { streamId: currentStreamId });
+      btn.classList.add('active');
+      btn.textContent = '■ Stop Alarm';
+    } else {
+      remoteAlarmActive = false;
+      socket.emit('alarm:stop', { streamId: currentStreamId });
+      btn.classList.remove('active');
+      btn.textContent = '🚨 Sound Alarm on Broadcaster';
+    }
+  }
+
+  // ─── Local alarm (rings here, used for detection alerts) ───────
+  function startLocalAlarm() {
+    if (localAlarmActive) return;
+    if (!localAlarmCtx) {
+      try { localAlarmCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch { return; }
+    }
+    if (localAlarmCtx.state === 'suspended') localAlarmCtx.resume();
+    localAlarmActive = true;
+    let toggle = false;
+    const beep = () => {
+      const osc  = localAlarmCtx.createOscillator();
+      const gain = localAlarmCtx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.value = toggle ? 1000 : 750;
+      gain.gain.setValueAtTime(0.0001, localAlarmCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.3, localAlarmCtx.currentTime + 0.02);
+      gain.gain.setValueAtTime(0.3, localAlarmCtx.currentTime + 0.25);
+      gain.gain.exponentialRampToValueAtTime(0.0001, localAlarmCtx.currentTime + 0.3);
+      osc.connect(gain); gain.connect(localAlarmCtx.destination);
+      osc.start(); osc.stop(localAlarmCtx.currentTime + 0.3);
+      toggle = !toggle;
+    };
+    beep();
+    localAlarmInterval = setInterval(beep, 350);
+  }
+
+  function stopLocalAlarm() {
+    localAlarmActive = false;
+    if (localAlarmInterval) { clearInterval(localAlarmInterval); localAlarmInterval = null; }
+  }
+
+  // ─── Object Detection (TF.js + COCO-SSD, lazy-loaded) ──────────
+  // The COCO-SSD model recognizes exactly 80 object classes (the COCO-80 set).
+  // To detect anything else (e.g. "package", "fire", "helmet") you'd need to
+  // swap in a different model — see https://github.com/tensorflow/tfjs-models
+  // or train a custom YOLOv5/v8 model and load it via tf.loadGraphModel().
+  const COCO_GROUPS = {
+    'People & Animals': ['person', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe'],
+    'Vehicles':         ['airplane', 'bicycle', 'boat', 'bus', 'car', 'motorcycle', 'train', 'truck'],
+    'Outdoor & Street': ['bench', 'fire hydrant', 'parking meter', 'stop sign', 'traffic light'],
+    'Sports & Recreation': ['baseball bat', 'baseball glove', 'frisbee', 'kite', 'skateboard', 'skis', 'snowboard', 'sports ball', 'surfboard', 'tennis racket'],
+    'Personal Items':   ['backpack', 'handbag', 'suitcase', 'tie', 'umbrella'],
+    'Kitchenware':      ['bottle', 'bowl', 'cup', 'fork', 'knife', 'spoon', 'wine glass'],
+    'Food':             ['apple', 'banana', 'broccoli', 'cake', 'carrot', 'donut', 'hot dog', 'orange', 'pizza', 'sandwich'],
+    'Furniture':        ['bed', 'chair', 'couch', 'dining table', 'potted plant', 'toilet'],
+    'Electronics':      ['cell phone', 'keyboard', 'laptop', 'mouse', 'remote', 'tv'],
+    'Appliances':       ['microwave', 'oven', 'refrigerator', 'sink', 'toaster'],
+    'Other Indoor':     ['book', 'clock', 'hair drier', 'scissors', 'teddy bear', 'toothbrush', 'vase']
+  };
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = src;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Failed to load ' + src));
+      document.head.appendChild(script);
+    });
+  }
+
+  async function enableDetection() {
+    const btn = document.getElementById('odEnableBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Loading TensorFlow.js…';
+    try {
+      if (!window.tf) {
+        await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js');
+      }
+      btn.textContent = '⏳ Loading COCO-SSD model…';
+      if (!window.cocoSsd) {
+        await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
+      }
+      btn.textContent = '⏳ Initializing model…';
+      cocoModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+
+      // Replace panel with controls
+      document.getElementById('odContent').innerHTML = `
+        <select class="od-select" id="odTarget">
+          <option value="">Select what to watch for…</option>
+          ${Object.entries(COCO_GROUPS).map(([group, items]) => `
+            <optgroup label="${group}">
+              ${items.map(c => `<option value="${c}">${c.charAt(0).toUpperCase() + c.slice(1)}</option>`).join('')}
+            </optgroup>`).join('')}
+        </select>
+        <button class="alarm-btn" style="background: var(--blue);" onclick="toggleDetection()" id="odToggleBtn">
+          👁️ Start Watching
+        </button>
+        <div class="od-status" id="odStatus">Pick a target object above, then tap Start.</div>
+        <div class="ctrl-disabled-msg" style="margin-top: 8px; line-height: 1.5;">
+          Model: COCO-SSD (80 classes). For custom objects, swap the model — see comments in <code>view.html</code>.
+        </div>
+      `;
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '⚡ Enable AI Detection';
+      alert('Failed to load model: ' + e.message);
+    }
+  }
+
+  function toggleDetection() {
+    if (detectionInterval) {
+      clearInterval(detectionInterval);
+      detectionInterval = null;
+      detectionEnabled = false;
+      stopLocalAlarm();
+      clearDetectionCanvas();
+      document.getElementById('odToggleBtn').textContent = '👁️ Start Watching';
+      document.getElementById('odStatus').className = 'od-status';
+      document.getElementById('odStatus').textContent = 'Stopped';
+    } else {
+      const target = document.getElementById('odTarget').value;
+      if (!target) { alert('Please select a target object first'); return; }
+      detectionTarget = target;
+      detectionEnabled = true;
+      lastDetectionTime = 0;
+      document.getElementById('odToggleBtn').textContent = '⏹ Stop Watching';
+      document.getElementById('odStatus').className = 'od-status';
+      document.getElementById('odStatus').textContent = `Looking for ${target}…`;
+      detectionInterval = setInterval(runDetection, 1500);
+    }
+  }
+
+  async function runDetection() {
+    const video = document.getElementById('stream');
+    if (!cocoModel || !video.videoWidth || video.paused) return;
+
+    let predictions = [];
+    try {
+      predictions = await cocoModel.detect(video);
+    } catch (e) {
+      console.error('Detection error:', e);
+      return;
+    }
+
+    drawDetections(predictions);
+
+    const match = predictions.find(p => p.class === detectionTarget && p.score > 0.55);
+    const status = document.getElementById('odStatus');
+
+    if (match) {
+      status.className = 'od-status alert';
+      status.innerHTML = `🚨 DETECTED <strong>${match.class}</strong> at ${Math.round(match.score * 100)}% confidence`;
+      lastDetectionTime = Date.now();
+      if (!localAlarmActive) startLocalAlarm();
+    } else {
+      // Stop alarm 3 seconds after last detection
+      if (localAlarmActive && Date.now() - lastDetectionTime > 3000) {
+        stopLocalAlarm();
+      }
+      status.className = 'od-status';
+      const sinceMsg = lastDetectionTime
+        ? ` · last seen ${Math.floor((Date.now() - lastDetectionTime) / 1000)}s ago`
+        : '';
+      status.textContent = `Looking for ${detectionTarget}${sinceMsg}`;
+    }
+  }
+
+  function drawDetections(predictions) {
+    const video  = document.getElementById('stream');
+    const canvas = document.getElementById('detectionCanvas');
+    if (!video.videoWidth) return;
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    predictions.forEach(p => {
+      const isTarget = p.class === detectionTarget && p.score > 0.55;
+      ctx.strokeStyle = isTarget ? '#ff3b30' : 'rgba(255,255,255,0.4)';
+      ctx.lineWidth = isTarget ? 4 : 2;
+      const [x, y, w, h] = p.bbox;
+      ctx.strokeRect(x, y, w, h);
+      const label = `${p.class} ${Math.round(p.score * 100)}%`;
+      ctx.font = 'bold 16px -apple-system, sans-serif';
+      const textW = ctx.measureText(label).width + 12;
+      ctx.fillStyle = isTarget ? '#ff3b30' : 'rgba(0,0,0,0.7)';
+      ctx.fillRect(x, y - 24, textW, 24);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(label, x + 6, y - 7);
+    });
+  }
+
+  function clearDetectionCanvas() {
+    const canvas = document.getElementById('detectionCanvas');
+    if (canvas.getContext) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+  }
+</script>
+</body>
+</html>

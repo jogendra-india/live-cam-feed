@@ -1,0 +1,7 @@
+node_modules/
+recordings/*.webm
+recordings/.gitkeep.bak
+certs/
+*.log
+.env
+.DS_Store

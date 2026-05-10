@@ -1,0 +1,26 @@
+{
+  "name": "lan-stream",
+  "version": "3.0.0",
+  "description": "LAN multi-stream live video broadcasting with server-side recording and remote control",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "gen-certs": "mkdir -p certs && openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem -days 365 -nodes -subj '/CN=lan-stream'"
+  },
+  "keywords": [
+    "webrtc",
+    "lan",
+    "live-streaming",
+    "p2p",
+    "video",
+    "recording"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

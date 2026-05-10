@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>LAN-STREAM Embed</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%; width: 100%; background: #000; color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+      overflow: hidden;
+    }
+    video {
+      width: 100%; height: 100%; display: block; background: #000;
+    }
+    .msg {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 10px; background: #000; transition: opacity 0.5s;
+    }
+    .msg.hidden { opacity: 0; pointer-events: none; }
+    .msg-icon { font-size: 38px; opacity: 0.5; }
+    .msg-spinner {
+      width: 38px; height: 38px;
+      border: 3px solid rgba(255,255,255,0.1); border-top-color: #0a84ff;
+      border-radius: 50%; animation: spin 0.9s linear infinite;
+    }
+    .msg-spinner.hidden { display: none; }
+    .msg-icon.hidden { display: none; }
+    .msg-title { font-size: 14px; }
+    .msg-sub { font-size: 11px; color: rgba(255,255,255,0.5); text-align: center; padding: 0 16px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<video id="v" autoplay playsinline></video>
+
+<div class="msg" id="msg">
+  <div class="msg-spinner" id="spin"></div>
+  <div class="msg-icon hidden" id="icon">📡</div>
+  <div class="msg-title" id="title">Connecting…</div>
+  <div class="msg-sub" id="sub">—</div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  // ─── Query params ──────────────────────────────────────────────
+  const params      = new URLSearchParams(location.search);
+  const streamId    = (params.get('id') || '').toUpperCase();
+  const audioOn     = params.get('audio') === '1';
+  const showCtrls   = params.get('controls') === '1';
+  const fit         = params.get('fit') || 'contain';
+
+  const v = document.getElementById('v');
+  v.style.objectFit = fit;
+  v.muted = !audioOn;
+  if (showCtrls) v.controls = true;
+
+  if (!streamId) {
+    setMsg('icon', '⚠️', 'Missing ?id=XXXX', 'Add a stream ID in the URL.');
+    throw new Error('Missing id');
+  }
+
+  // ─── WebRTC ────────────────────────────────────────────────────
+  const ICE = { iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" }
+  ]};
+
+  let pc;
+  const socket = io();
+
+  socket.on('connect', () => {
+    setMsg('spin', '', 'Connecting…', `Joining stream ${streamId}`);
+    socket.emit('viewer:watch', { streamId });
+  });
+
+  socket.on('viewer:error', () => {
+    setMsg('icon', '📡', 'Stream not found', `No active stream with ID ${streamId}`);
+    pollUntilLive();
+  });
+
+  socket.on('broadcaster:offer', async ({ offer }) => {
+    if (pc) pc.close();
+    pc = new RTCPeerConnection(ICE);
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) socket.emit('viewer:ice', { candidate });
+    };
+    pc.ontrack = ({ streams }) => {
+      v.srcObject = streams[0];
+      v.play().catch(() => {});
+      hideMsg();
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        setMsg('icon', '⚠️', 'Connection lost', 'Reconnecting…');
+        setTimeout(() => socket.emit('viewer:watch', { streamId }), 2000);
+      }
+    };
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit('viewer:answer', { answer });
+  });
+
+  socket.on('broadcaster:ice', ({ candidate }) => {
+    if (pc) pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+  });
+
+  socket.on('broadcaster:offline', ({ streamId: sid }) => {
+    if (sid !== streamId) return;
+    if (pc) { pc.close(); pc = null; }
+    v.srcObject = null;
+    setMsg('icon', '📡', 'Stream ended', 'Waiting for broadcaster…');
+    pollUntilLive();
+  });
+
+  // ─── Helpers ───────────────────────────────────────────────────
+  let pollInterval;
+  function pollUntilLive() {
+    clearInterval(pollInterval);
+    pollInterval = setInterval(() => {
+      if (socket.connected && !pc) socket.emit('viewer:watch', { streamId });
+    }, 4000);
+  }
+
+  function setMsg(type, icon, title, sub) {
+    document.getElementById('msg').classList.remove('hidden');
+    document.getElementById('spin').className = type === 'spin' ? 'msg-spinner' : 'msg-spinner hidden';
+    document.getElementById('icon').className = type === 'icon' ? 'msg-icon' : 'msg-icon hidden';
+    document.getElementById('icon').textContent = icon;
+    document.getElementById('title').textContent = title;
+    document.getElementById('sub').textContent = sub;
+  }
+  function hideMsg() {
+    document.getElementById('msg').classList.add('hidden');
+    clearInterval(pollInterval);
+  }
+</script>
+</body>
+</html>
