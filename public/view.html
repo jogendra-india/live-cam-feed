@@ -216,6 +216,34 @@
       color: var(--red);
       font-weight: 600;
     }
+    /* Match-threshold slider (sensitivity for the active model type) */
+    .od-threshold {
+      display: flex; align-items: center; gap: 8px;
+      margin: 8px 0;
+      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 11px;
+    }
+    .od-threshold label {
+      color: var(--muted);
+      flex-shrink: 0;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+    .od-threshold input[type=range] {
+      flex: 1; min-width: 0;
+      accent-color: var(--blue);
+    }
+    .od-threshold input[type=range]:disabled { opacity: 0.4; }
+    .od-threshold-val {
+      font-family: 'SF Mono', Menlo, monospace;
+      font-size: 12px; min-width: 36px; text-align: right;
+      color: var(--text);
+    }
+
     /* Custom (Teachable Machine) model UI */
     .tm-section {
       margin-top: 14px; padding-top: 14px;
@@ -490,6 +518,36 @@
   let lastDetectionTime = 0;
   let serverTMList = [];    // mirror of the server's tm_models.json
 
+  // Per-model-type match thresholds. COCO returns SSD detection scores
+  // (typical 0.5-0.95 for true positives), TM returns softmax probabilities
+  // that sum to 1 across classes — different scales, so they get separate
+  // defaults and separate user overrides. Stored in localStorage so the
+  // user's tuning survives reloads (this is per-viewer, not server-shared,
+  // since acceptable false-positive rates are personal preference).
+  let cocoThreshold = 0.55;
+  let tmThreshold   = 0.70;
+  const TH_STORAGE_KEY = 'lan-stream:thresholds';
+  (function loadThresholds() {
+    try {
+      const data = JSON.parse(localStorage.getItem(TH_STORAGE_KEY) || '{}');
+      if (typeof data.coco === 'number' && data.coco > 0 && data.coco < 1) cocoThreshold = data.coco;
+      if (typeof data.tm   === 'number' && data.tm   > 0 && data.tm   < 1) tmThreshold   = data.tm;
+    } catch {}
+  })();
+  function saveThresholds() {
+    try { localStorage.setItem(TH_STORAGE_KEY, JSON.stringify({ coco: cocoThreshold, tm: tmThreshold })); } catch {}
+  }
+
+  // Once the user opts in to AI detection, remember it for the next visit
+  // so they don't have to click ⚡ Enable AI Detection on every reload.
+  const AI_ENABLED_KEY = 'lan-stream:ai-enabled';
+  function isAIPreEnabled() {
+    try { return localStorage.getItem(AI_ENABLED_KEY) === '1'; } catch { return false; }
+  }
+  function setAIPreEnabled(v) {
+    try { localStorage.setItem(AI_ENABLED_KEY, v ? '1' : '0'); } catch {}
+  }
+
   // Read ?id=XXXX from URL
   const params = new URLSearchParams(location.search);
   const initialId = params.get('id');
@@ -537,11 +595,10 @@
       v.srcObject = streams[0];
       v.play().catch(() => {});
       hideWaiting();
-      const vt = streams[0].getVideoTracks()[0];
-      if (vt) {
-        const s = vt.getSettings();
-        document.getElementById('statRes').textContent = `${s.width}×${s.height}`;
-      }
+      // Skip vt.getSettings() — on a *remote* (receiving) track most
+      // browsers return {} for width/height. The accurate values come
+      // from videoElement.videoWidth/Height after 'loadedmetadata' (see
+      // the existing listener) and from getStats' frameWidth/Height.
       startStats();
     };
     pc.onconnectionstatechange = () => {
@@ -665,11 +722,20 @@
     if (!v.videoWidth || !v.videoHeight) return;
     setOrientation(v.videoHeight > v.videoWidth);
   }
-
-  document.getElementById('stream').addEventListener('loadedmetadata', autoDetectOrientation);
+  function refreshResolutionFromVideo() {
+    const v = document.getElementById('stream');
+    if (v.videoWidth && v.videoHeight) {
+      document.getElementById('statRes').textContent = `${v.videoWidth}×${v.videoHeight}`;
+    }
+  }
+  function onStreamMetadataReady() {
+    autoDetectOrientation();
+    refreshResolutionFromVideo();
+  }
+  document.getElementById('stream').addEventListener('loadedmetadata', onStreamMetadataReady);
   // Also re-check on resize events from the track (some browsers fire it
   // when the broadcaster flips the camera mid-stream).
-  document.getElementById('stream').addEventListener('resize', autoDetectOrientation);
+  document.getElementById('stream').addEventListener('resize', onStreamMetadataReady);
 
   // ─── Remote control panel ─────────────────────────────────────
   function updateRcPanel() {
@@ -796,6 +862,13 @@
         if (report.type === 'inbound-rtp' && report.kind === 'video') {
           if (report.framesPerSecond != null) {
             document.getElementById('statFps').textContent = Math.round(report.framesPerSecond);
+          }
+          // frameWidth/frameHeight on inbound-rtp is the most reliable
+          // source for the live resolution and reflects mid-stream
+          // changes (e.g. broadcaster flips camera).
+          if (report.frameWidth && report.frameHeight) {
+            document.getElementById('statRes').textContent =
+              `${report.frameWidth}×${report.frameHeight}`;
           }
           const now = report.timestamp || Date.now();
           if (lastTs && report.bytesReceived) {
@@ -959,9 +1032,18 @@
       const cocoModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
       models.set('coco', { type: 'coco', model: cocoModel, name: 'Standard (COCO-SSD)' });
 
-      // Render the full panel: target picker, start/stop, custom-model manager.
+      // Remember opt-in so the user doesn't have to click again next time.
+      setAIPreEnabled(true);
+
+      // Render the full panel: target picker, sensitivity slider,
+      // start/stop, custom-model manager.
       document.getElementById('odContent').innerHTML = `
         <select class="od-select" id="odTarget"></select>
+        <div class="od-threshold" title="Higher = stricter (fewer false positives, more missed detections)">
+          <label id="odThresholdLabel">MIN CONF</label>
+          <input type="range" id="odThreshold" min="30" max="95" step="1" disabled value="55"/>
+          <span class="od-threshold-val" id="odThresholdVal">—</span>
+        </div>
         <button class="alarm-btn" style="background: var(--blue);" onclick="toggleDetection()" id="odToggleBtn">
           👁️ Start Watching
         </button>
@@ -987,6 +1069,13 @@
 
       rebuildTargetPicker();
       rebuildCustomModelList();
+
+      // Wire up threshold slider + target-change refresh.
+      const targetEl    = document.getElementById('odTarget');
+      const thresholdEl = document.getElementById('odThreshold');
+      if (targetEl)    targetEl.addEventListener('change', updateThresholdUI);
+      if (thresholdEl) thresholdEl.addEventListener('input', onThresholdInput);
+      updateThresholdUI();
 
       // Pull the latest server-side TM list (in case the socket event
       // hasn't arrived yet) and load every entry so this viewer matches
@@ -1038,16 +1127,16 @@
     if (!m) return;
 
     let detected = false, confidence = 0;
+    const threshold = m.type === 'tm' ? tmThreshold : cocoThreshold;
     try {
       if (m.type === 'coco') {
         const preds = await m.model.detect(video);
-        const hit = preds.find(p => p.class === watchTarget.class && p.score > 0.55);
+        const hit = preds.find(p => p.class === watchTarget.class && p.score > threshold);
         if (hit) { detected = true; confidence = hit.score; }
       } else if (m.type === 'tm') {
         const preds = await m.model.predict(video);
         const hit = preds.find(p => p.className === watchTarget.class);
-        // TM probabilities sum to 1 across classes; 0.7 is a sensible default.
-        if (hit && hit.probability > 0.7) { detected = true; confidence = hit.probability; }
+        if (hit && hit.probability > threshold) { detected = true; confidence = hit.probability; }
       }
     } catch (e) {
       console.error('Detection error:', e);
@@ -1212,6 +1301,42 @@
     sel.innerHTML = html;
     // Restore previous selection if it still exists.
     if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+    // Setting select.value programmatically does not fire 'change', so
+    // refresh the threshold slider to match whatever's now selected.
+    updateThresholdUI();
+  }
+
+  // Threshold UI — reflects the right value/default for whichever model
+  // type the currently-selected target belongs to. Sliding the bar
+  // updates that model type's threshold (and persists it).
+  function updateThresholdUI() {
+    const slider  = document.getElementById('odThreshold');
+    const valEl   = document.getElementById('odThresholdVal');
+    const labelEl = document.getElementById('odThresholdLabel');
+    if (!slider) return;
+    const sel = (document.getElementById('odTarget')?.value) || '';
+    if (!sel) {
+      slider.disabled = true;
+      valEl.textContent = '—';
+      if (labelEl) labelEl.textContent = 'MIN CONF';
+      return;
+    }
+    const isTm = sel.startsWith('tm:');
+    const v = isTm ? tmThreshold : cocoThreshold;
+    slider.disabled = false;
+    slider.value = Math.round(v * 100);
+    valEl.textContent = slider.value + '%';
+    if (labelEl) labelEl.textContent = isTm ? 'MIN CONF · CUSTOM' : 'MIN CONF · STANDARD';
+  }
+  function onThresholdInput(e) {
+    const pct = parseInt(e.target.value, 10);
+    document.getElementById('odThresholdVal').textContent = pct + '%';
+    const sel = (document.getElementById('odTarget')?.value) || '';
+    if (!sel) return;
+    const v = pct / 100;
+    if (sel.startsWith('tm:')) tmThreshold = v;
+    else cocoThreshold = v;
+    saveThresholds();
   }
   function rebuildCustomModelList() {
     const list = document.getElementById('tmModelList');
@@ -1389,6 +1514,22 @@
 
     applyZoomTransform();
   })();
+
+  // Auto-enable AI detection on page load if the user previously opted in,
+  // so they don't have to click ⚡ Enable AI Detection on every reload.
+  // Deferred slightly so the page becomes interactive first; the panel
+  // shows its own "⏳ Loading…" state while tfjs + coco-ssd download.
+  if (isAIPreEnabled()) {
+    setTimeout(() => {
+      const btn = document.getElementById('odEnableBtn');
+      if (btn && !btn.disabled) {
+        enableDetection().catch(e => {
+          console.warn('Auto-enable failed:', e);
+          // Leave the flag set — user might just be temporarily offline.
+        });
+      }
+    }, 250);
+  }
 </script>
 </body>
 </html>

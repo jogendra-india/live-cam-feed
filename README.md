@@ -278,7 +278,18 @@ The Object Detection panel has a **Custom Models · Teachable Machine** section.
 
 You can add as many custom models as you want. Each is listed in the panel with a remove (✕) button. **Model URLs are stored on the server** (`data/tm_models.json`) and pushed to every connected viewer in real time — train once on browser A, the model is immediately available to browsers B, C, D… No re-pasting, no per-browser setup.
 
-> **Note:** Teachable Machine's standard image model is a *classifier*, not a detector — it tells you which class the frame most resembles. That's exactly the right shape for "is X in the frame right now?" questions; it does not produce bounding boxes. The match threshold is 0.7 (probability) for TM models, 0.55 (score) for COCO-SSD.
+> **Note:** Teachable Machine's standard image model is a *classifier*, not a detector — it tells you which class the frame most resembles. That's exactly the right shape for "is X in the frame right now?" questions; it does not produce bounding boxes.
+
+#### Tuning the match threshold
+
+The **MIN CONF** slider directly under the target picker sets how confident the model must be before raising the alarm. It's per-model-type:
+
+- When you've selected a **Standard** (COCO-SSD) class, the slider tunes the COCO threshold (default 55%)
+- When you've selected a **Custom** (Teachable Machine) class, the slider tunes the TM threshold (default 70%)
+
+The two values are remembered separately in `localStorage`, so once you've found the right sensitivity for each type, every reload starts there. Drag the slider higher to suppress false positives at the cost of occasional missed detections; lower for the opposite tradeoff.
+
+This setting is per-viewer (personal preference about acceptable false-alarm rate), not server-shared.
 
 **Performance:** ~100-300 ms per inference on a modern device, runs at ~0.7 FPS detection rate (configurable in code). All inference is client-side — no data sent to the server, no API keys, no cloud.
 
