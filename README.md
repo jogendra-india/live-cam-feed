@@ -84,7 +84,9 @@ Video flows **directly peer-to-peer** between devices using WebRTC, so latency i
 - 🎛️ **Remote control panel** — pause/resume the camera, flip front/back, toggle audio
 - 🎙️ **Tap-to-talk** — push-and-hold to send your mic audio to the broadcaster
 - 🚨 **Remote alarm** — siren on broadcaster's device until you tap stop
-- 🎯 **AI object detection** — 80 standard objects (COCO-SSD) plus unlimited custom Teachable Machine models added directly from the UI; rings a local alarm when a target appears in frame
+- 🎯 **AI object detection** — 80 standard objects (COCO-SSD) plus unlimited custom Teachable Machine models added directly from the UI; rings a local alarm when a target appears in frame. Settings (target, sensitivity, watching state) are scoped per-camera and persist across reloads — switch cameras, switch back, watch resumes
+- 💾 **Per-camera recording continues across viewer switches** — server-side recording is independent of which viewer is connected, so peeking at another camera while one is recording is safe; the REC button always reflects the camera you're currently viewing
+- 🔊 **Player prefs persist** — volume / mute (global) and orientation override (per-camera) are remembered across reloads
 - ⏺️ **Server recording** — start/stop a recording from any viewer
 - 📸 **Snapshot** — save current frame as PNG (also handy for collecting training images)
 - ⊞ **Picture-in-Picture** support

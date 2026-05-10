@@ -543,24 +543,53 @@
   let lastDetectionTime = 0;
   let serverTMList = [];    // mirror of the server's tm_models.json
 
-  // Per-model-type match thresholds. COCO returns SSD detection scores
-  // (typical 0.5-0.95 for true positives), TM returns softmax probabilities
-  // that sum to 1 across classes — different scales, so they get separate
-  // defaults and separate user overrides. Stored in localStorage so the
-  // user's tuning survives reloads (this is per-viewer, not server-shared,
-  // since acceptable false-positive rates are personal preference).
-  let cocoThreshold = 0.55;
-  let tmThreshold   = 0.70;
-  const TH_STORAGE_KEY = 'lan-stream:thresholds';
-  (function loadThresholds() {
+  // ─── Viewer prefs (per-stream + global) ────────────────────────
+  // Per-stream prefs live under byStream[<streamId>] so each camera
+  // remembers its own watch target / thresholds / orientation override
+  // / zoom across reloads. Global prefs (volume, mute) apply everywhere.
+  // Defaults below feed the slider when a stream has no override yet.
+  const COCO_DEFAULT_THRESHOLD = 0.55;
+  const TM_DEFAULT_THRESHOLD   = 0.70;
+  const PREFS_KEY = 'lan-stream:viewer-prefs';
+  const viewerPrefs = {
+    global: { volume: 0, muted: true },
+    byStream: {} // id -> { target, cocoThreshold, tmThreshold, watching, orientationOverride, zoomLevel, panX, panY }
+  };
+  (function loadViewerPrefs() {
     try {
-      const data = JSON.parse(localStorage.getItem(TH_STORAGE_KEY) || '{}');
-      if (typeof data.coco === 'number' && data.coco > 0 && data.coco < 1) cocoThreshold = data.coco;
-      if (typeof data.tm   === 'number' && data.tm   > 0 && data.tm   < 1) tmThreshold   = data.tm;
+      const data = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+      if (data && typeof data === 'object') {
+        if (data.global && typeof data.global === 'object') Object.assign(viewerPrefs.global, data.global);
+        if (data.byStream && typeof data.byStream === 'object') viewerPrefs.byStream = data.byStream;
+      }
+    } catch {}
+    // Migrate the older flat 'lan-stream:thresholds' key into per-stream
+    // defaults the first time we see it: store as global fallback.
+    try {
+      const legacy = JSON.parse(localStorage.getItem('lan-stream:thresholds') || 'null');
+      if (legacy) {
+        if (typeof legacy.coco === 'number') viewerPrefs.global._cocoDefault = legacy.coco;
+        if (typeof legacy.tm   === 'number') viewerPrefs.global._tmDefault   = legacy.tm;
+      }
     } catch {}
   })();
-  function saveThresholds() {
-    try { localStorage.setItem(TH_STORAGE_KEY, JSON.stringify({ coco: cocoThreshold, tm: tmThreshold })); } catch {}
+  function saveViewerPrefs() {
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(viewerPrefs)); } catch {}
+  }
+  function getStreamPrefs(id) {
+    if (!id) return null;
+    if (!viewerPrefs.byStream[id]) viewerPrefs.byStream[id] = {};
+    return viewerPrefs.byStream[id];
+  }
+  function streamCocoThreshold(id) {
+    const sp = id && viewerPrefs.byStream[id];
+    if (sp && typeof sp.cocoThreshold === 'number') return sp.cocoThreshold;
+    return viewerPrefs.global._cocoDefault ?? COCO_DEFAULT_THRESHOLD;
+  }
+  function streamTmThreshold(id) {
+    const sp = id && viewerPrefs.byStream[id];
+    if (sp && typeof sp.tmThreshold === 'number') return sp.tmThreshold;
+    return viewerPrefs.global._tmDefault ?? TM_DEFAULT_THRESHOLD;
   }
 
   // Once the user opts in to AI detection, remember it for the next visit
@@ -656,23 +685,40 @@
       updateRcPanel();
       document.getElementById('streamName').textContent = data.name;
       document.getElementById('viewerCount').textContent = `👁 ${data.viewers}`;
+      // The new stream may already be mid-recording (server-side) — make
+      // sure the REC button + timer reflect that, not the previous
+      // stream's state.
+      syncRecordingUIFromState(data.recording);
     }
   });
 
   socket.on('recording:status', ({ streamId, active, duration, bytes }) => {
+    // Recording is server-side and per-stream. We only update OUR UI
+    // when the event is for the camera we're currently watching — if
+    // camera 1 is recording and the user switches to camera 2 to take
+    // a peek, camera 1 keeps recording in the background; switching
+    // back will refresh the UI from currentStreamData.recording (see
+    // syncRecordingUI below).
     if (streamId !== currentStreamId) return;
+    if (active) recordingStartedAt = Date.now();
+    syncRecordingUIFromState({ active, startedAt: recordingStartedAt });
+  });
+
+  function syncRecordingUIFromState(rec) {
+    const active = !!(rec && rec.active);
     isRecording = active;
     document.getElementById('recButton').classList.toggle('recording', active);
     document.getElementById('recButton').textContent = active ? '■ Stop Recording' : '⏺ Start Recording';
     document.getElementById('recPill').classList.toggle('show', active);
     document.getElementById('recTime').classList.toggle('show', active);
     if (active) {
-      recordingStartedAt = Date.now();
+      recordingStartedAt = rec.startedAt || Date.now();
       startRecTimer();
     } else {
       stopRecTimer();
+      document.getElementById('recTime').textContent = '00:00';
     }
-  });
+  }
 
   socket.on('control:error', ({ message }) => {
     alert('Control error: ' + message);
@@ -706,17 +752,32 @@
       updateRcPanel();
       document.getElementById('streamName').textContent = me.name;
       document.getElementById('viewerCount').textContent = `👁 ${me.viewers}`;
+      syncRecordingUIFromState(me.recording);
     }
   }
 
   function watchStream(id) {
     if (id === currentStreamId) return;
+    // Stop any active watch on the OUTGOING stream — its watching=true
+    // is preserved so we resume when the user returns to it. Server-side
+    // recording is unaffected (the broadcaster keeps recording in the
+    // background regardless of which viewer is connected).
+    stopWatchOnStreamSwitch();
     currentStreamId = id;
     history.replaceState(null, '', `?id=${id}`);
     setWaiting('spin', 'Connecting…', `Joining stream ${id}…`);
     document.getElementById('recButton').disabled = false;
-    // New stream — re-enable orientation auto-detect.
-    userSetOrientation = false;
+    // Apply the new stream's saved orientation override (or clear so
+    // the next loadedmetadata auto-detects).
+    const sp = getStreamPrefs(id);
+    if (sp && sp.orientationOverride) {
+      userSetOrientation = true;
+      setOrientation(sp.orientationOverride === 'portrait');
+    } else {
+      userSetOrientation = false;
+    }
+    // Apply OD prefs (will no-op until detection panel exists).
+    applyStreamOdPrefs();
     socket.emit('viewer:watch', { streamId: id });
   }
 
@@ -738,7 +799,12 @@
   function toggleOrientation() {
     userSetOrientation = true;
     const wrap = document.getElementById('videoWrap');
-    setOrientation(!wrap.classList.contains('portrait'));
+    const wasPortrait = wrap.classList.contains('portrait');
+    setOrientation(!wasPortrait);
+    // Persist per-stream so the user's choice sticks across reloads
+    // and stream switches.
+    const sp = getStreamPrefs(currentStreamId);
+    if (sp) { sp.orientationOverride = wasPortrait ? 'landscape' : 'portrait'; saveViewerPrefs(); }
   }
 
   function autoDetectOrientation() {
@@ -784,7 +850,7 @@
         </div>
         <input type="range" id="camZoomSlider"
                min="${cz.min}" max="${cz.max}" step="${cz.step || 0.1}" value="${cz.current}"/>
-        <div class="cam-zoom-hint">Range ${(+cz.min).toFixed(1)}×–${(+cz.max).toFixed(1)}× — drives the actual camera, not just a CSS scale.</div>
+        <div class="cam-zoom-hint">Range ${(+cz.min).toFixed(1)}×–${(+cz.max).toFixed(1)}× — drives the actual camera.</div>
       </div>` : '';
     c.innerHTML = `
       <div class="ctrl-grid">
@@ -866,13 +932,31 @@
     v.volume = parseFloat(e.target.value);
     v.muted = v.volume === 0;
     document.getElementById('muteBtn').textContent = v.muted ? '🔇' : '🔊';
+    viewerPrefs.global.volume = v.volume;
+    viewerPrefs.global.muted  = v.muted;
+    saveViewerPrefs();
   });
 
   function toggleMute() {
     const v = document.getElementById('stream');
     v.muted = !v.muted;
     document.getElementById('muteBtn').textContent = v.muted ? '🔇' : '🔊';
+    viewerPrefs.global.muted = v.muted;
+    saveViewerPrefs();
   }
+
+  // Apply persisted volume/mute on page load.
+  (function applyGlobalPlayerPrefs() {
+    const v = document.getElementById('stream');
+    const slider = document.getElementById('volSlider');
+    const muteBtn = document.getElementById('muteBtn');
+    const vol = (typeof viewerPrefs.global.volume === 'number') ? viewerPrefs.global.volume : 0;
+    const muted = !!viewerPrefs.global.muted;
+    v.volume = vol;
+    v.muted  = muted || vol === 0;
+    slider.value = vol;
+    muteBtn.textContent = v.muted ? '🔇' : '🔊';
+  })();
 
   function fullscreen() {
     const v = document.getElementById('stream');
@@ -1125,9 +1209,20 @@
       // Wire up threshold slider + target-change refresh.
       const targetEl    = document.getElementById('odTarget');
       const thresholdEl = document.getElementById('odThreshold');
-      if (targetEl)    targetEl.addEventListener('change', updateThresholdUI);
+      if (targetEl) {
+        targetEl.addEventListener('change', () => {
+          updateThresholdUI();
+          // Save the picked target under the current stream so it
+          // re-appears next time the user comes back to this camera.
+          const sp = getStreamPrefs(currentStreamId);
+          if (sp) { sp.target = targetEl.value || null; saveViewerPrefs(); }
+        });
+      }
       if (thresholdEl) thresholdEl.addEventListener('input', onThresholdInput);
       updateThresholdUI();
+      // Apply the current stream's saved OD prefs (target dropdown value
+      // + auto-resume watching if it was on for this camera).
+      applyStreamOdPrefs();
 
       // Pull the latest server-side TM list (in case the socket event
       // hasn't arrived yet) and load every entry so this viewer matches
@@ -1150,6 +1245,8 @@
       detectionInterval = null;
       detectionEnabled = false;
       stopLocalAlarm();
+      const sp = getStreamPrefs(currentStreamId);
+      if (sp) { sp.watching = false; saveViewerPrefs(); }
       document.getElementById('odToggleBtn').textContent = '👁️ Start Watching';
       document.getElementById('odStatus').className = 'od-status';
       document.getElementById('odStatus').textContent = 'Stopped';
@@ -1164,6 +1261,8 @@
       };
       detectionEnabled = true;
       lastDetectionTime = 0;
+      const sp = getStreamPrefs(currentStreamId);
+      if (sp) { sp.target = value; sp.watching = true; saveViewerPrefs(); }
       document.getElementById('odToggleBtn').textContent = '⏹ Stop Watching';
       document.getElementById('odStatus').className = 'od-status';
       document.getElementById('odStatus').textContent = `Looking for ${watchTarget.class}…`;
@@ -1179,7 +1278,7 @@
     if (!m) return;
 
     let detected = false, confidence = 0;
-    const threshold = m.type === 'tm' ? tmThreshold : cocoThreshold;
+    const threshold = m.type === 'tm' ? streamTmThreshold(currentStreamId) : streamCocoThreshold(currentStreamId);
     try {
       if (m.type === 'coco') {
         const preds = await m.model.detect(video);
@@ -1360,7 +1459,8 @@
 
   // Threshold UI — reflects the right value/default for whichever model
   // type the currently-selected target belongs to. Sliding the bar
-  // updates that model type's threshold (and persists it).
+  // updates that model type's threshold for the *current stream* and
+  // persists it under viewerPrefs.byStream[currentStreamId].
   function updateThresholdUI() {
     const slider  = document.getElementById('odThreshold');
     const valEl   = document.getElementById('odThresholdVal');
@@ -1374,7 +1474,7 @@
       return;
     }
     const isTm = sel.startsWith('tm:');
-    const v = isTm ? tmThreshold : cocoThreshold;
+    const v = isTm ? streamTmThreshold(currentStreamId) : streamCocoThreshold(currentStreamId);
     slider.disabled = false;
     slider.value = Math.round(v * 100);
     valEl.textContent = slider.value + '%';
@@ -1386,9 +1486,11 @@
     const sel = (document.getElementById('odTarget')?.value) || '';
     if (!sel) return;
     const v = pct / 100;
-    if (sel.startsWith('tm:')) tmThreshold = v;
-    else cocoThreshold = v;
-    saveThresholds();
+    const sp = getStreamPrefs(currentStreamId);
+    if (!sp) return;
+    if (sel.startsWith('tm:')) sp.tmThreshold = v;
+    else sp.cocoThreshold = v;
+    saveViewerPrefs();
   }
   function rebuildCustomModelList() {
     const list = document.getElementById('tmModelList');
@@ -1414,6 +1516,52 @@
       btn.addEventListener('click', () => removeTMModel(btn.dataset.url));
     });
   }
+  // ─── Per-stream OD prefs glue ──────────────────────────────────
+  // Apply the current stream's saved target / watching state to the
+  // panel. Called when AI detection just finished initialising AND
+  // when the viewer switches to a different stream.
+  function applyStreamOdPrefs() {
+    if (!models.has('coco')) return; // panel hasn't been rendered yet
+    const sel = document.getElementById('odTarget');
+    if (!sel) return;
+    const sp = getStreamPrefs(currentStreamId);
+    const wantTarget = sp && sp.target;
+    if (wantTarget && [...sel.options].some(o => o.value === wantTarget)) {
+      sel.value = wantTarget;
+    } else if (sel.value && !(sp && sp.target === sel.value)) {
+      // No saved target for this stream — clear the picker.
+      sel.value = '';
+    }
+    updateThresholdUI();
+    // Auto-resume watching if it was on for this camera.
+    if (sp && sp.watching && sel.value && !detectionInterval) {
+      toggleDetection();
+    }
+  }
+
+  // When switching streams, stop any active watch (save its target
+  // + watching=true so it auto-resumes if the user returns) and reset
+  // the panel to defaults; the new stream's prefs are applied right
+  // after stream:state arrives via applyStreamOdPrefs().
+  function stopWatchOnStreamSwitch() {
+    if (detectionInterval) {
+      clearInterval(detectionInterval);
+      detectionInterval = null;
+      detectionEnabled = false;
+      stopLocalAlarm();
+      lastDetectionTime = 0;
+      const btn = document.getElementById('odToggleBtn');
+      if (btn) btn.textContent = '👁️ Start Watching';
+      const stEl = document.getElementById('odStatus');
+      if (stEl) {
+        stEl.className = 'od-status';
+        stEl.textContent = 'Pick a target object above, then tap Start.';
+      }
+      // Note: we DON'T flip sp.watching here — we want it to stay true
+      // so the auto-resume on return works.
+    }
+  }
+
   async function handleAddTMUrl() {
     const input = document.getElementById('tmUrlInput');
     const msg   = document.getElementById('tmAddMsg');
