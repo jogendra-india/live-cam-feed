@@ -51,6 +51,15 @@
       position: relative; aspect-ratio: 16/9;
       background: #000; border: 1px solid var(--border); border-radius: 12px;
       overflow: hidden;
+      transition: max-width 0.25s, aspect-ratio 0.25s;
+    }
+    /* Portrait framing — keeps the box from blowing out vertically by
+       pinning max-width to the height-derived width via aspect-ratio. */
+    .video-wrap.portrait {
+      aspect-ratio: 9/16;
+      max-height: calc(100vh - 220px);
+      max-width: calc((100vh - 220px) * 9 / 16);
+      margin-left: auto; margin-right: auto;
     }
     video {
       width: 100%; height: 100%; object-fit: contain; display: block; background: #000;
@@ -207,10 +216,75 @@
       color: var(--red);
       font-weight: 600;
     }
-    .detection-overlay {
+    /* Custom (Teachable Machine) model UI */
+    .tm-section {
+      margin-top: 14px; padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+    .tm-section-title {
+      font-size: 11px; color: var(--muted); letter-spacing: 0.15em;
+      text-transform: uppercase; margin-bottom: 10px; font-weight: 600;
+    }
+    .tm-add-row { display: flex; gap: 6px; margin-top: 8px; }
+    .tm-add-row .od-select { margin-bottom: 0; flex: 1; min-width: 0; }
+    .tm-add-btn {
+      padding: 8px 14px; border-radius: 8px; border: none;
+      background: var(--blue); color: #fff;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+      white-space: nowrap;
+    }
+    .tm-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .tm-add-msg {
+      font-size: 11px; margin-top: 6px; min-height: 14px; line-height: 1.4;
+    }
+    .tm-add-msg.ok  { color: var(--green); }
+    .tm-add-msg.err { color: var(--red); }
+    .tm-model-row {
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; gap: 8px;
+    }
+    .tm-model-name { font-size: 13px; font-weight: 500; word-break: break-word; }
+    .tm-model-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .tm-remove-btn {
+      width: 26px; height: 26px; border-radius: 6px;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--muted); font-size: 12px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .tm-remove-btn:hover { background: rgba(255,59,48,0.15); color: var(--red); border-color: var(--red); }
+    .tm-empty { font-size: 12px; color: var(--muted); padding: 4px 0 6px; }
+
+    /* Zoom stage — wraps the video so it transforms together. */
+    .zoom-stage {
       position: absolute; inset: 0;
-      width: 100%; height: 100%;
-      pointer-events: none;
+      transform-origin: 0 0;
+      will-change: transform;
+    }
+    .video-wrap.zoomed .zoom-stage { cursor: grab; }
+    .video-wrap.zoomed.dragging .zoom-stage { cursor: grabbing; }
+
+    .zoom-controls {
+      position: absolute; bottom: 12px; right: 12px;
+      display: flex; align-items: center; gap: 2px;
+      background: rgba(0,0,0,0.55);
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 4px; z-index: 6;
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    }
+    .zoom-controls button {
+      width: 30px; height: 30px; border: none; border-radius: 6px;
+      background: transparent; color: #fff;
+      font-size: 16px; line-height: 1; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .zoom-controls button:hover:not(:disabled) { background: rgba(255,255,255,0.12); }
+    .zoom-controls button:disabled { opacity: 0.35; cursor: not-allowed; }
+    .zoom-level {
+      font-family: 'SF Mono', Menlo, monospace;
+      font-size: 11px; color: var(--muted);
+      min-width: 40px; text-align: center;
     }
 
     /* Recording panel */
@@ -263,15 +337,23 @@
 <main>
   <!-- VIDEO COLUMN -->
   <div class="video-col">
-    <div class="video-wrap">
-      <video id="stream" autoplay playsinline muted></video>
-      <canvas id="detectionCanvas" class="detection-overlay"></canvas>
+    <div class="video-wrap" id="videoWrap">
+      <div class="zoom-stage" id="zoomStage">
+        <video id="stream" autoplay playsinline muted></video>
+      </div>
 
       <div class="hud-top">
         <span>
           <span class="live-pill" id="livePill"><span class="live-dot"></span> LIVE</span>
           <span class="rec-pill" id="recPill">REC</span>
         </span>
+      </div>
+
+      <div class="zoom-controls">
+        <button onclick="zoomOut()"  id="zoomOutBtn"   title="Zoom out">−</button>
+        <span class="zoom-level" id="zoomLevel">1.00×</span>
+        <button onclick="zoomIn()"   id="zoomInBtn"    title="Zoom in">+</button>
+        <button onclick="zoomReset()" id="zoomResetBtn" title="Reset zoom">⊙</button>
       </div>
 
       <div class="waiting" id="waiting">
@@ -288,6 +370,7 @@
         <input type="range" min="0" max="1" step="0.05" value="0" id="volSlider"/>
       </div>
       <button class="icon-btn" onclick="snapshot()" title="Snapshot">📸</button>
+      <button class="icon-btn" onclick="toggleOrientation()" id="orientBtn" title="Switch landscape / portrait">🖥️</button>
       <button class="icon-btn" onclick="togglePiP()" title="Picture-in-Picture">⊞</button>
       <button class="icon-btn" onclick="fullscreen()" title="Fullscreen">⛶</button>
       <div style="margin-left:auto"></div>
@@ -394,12 +477,18 @@
   // Local alarm context (used by object detection)
   let localAlarmCtx = null, localAlarmInterval = null, localAlarmActive = false;
 
-  // Object detection
-  let cocoModel = null;
+  // Object detection — multi-model registry.
+  // Key 'coco' is the built-in 80-class detector; 'tm:<url>' entries are
+  // user-added Teachable Machine classifiers. The list of TM models is
+  // owned by the server (data/tm_models.json) and pushed to every viewer
+  // via the 'tm-models:updated' socket event, so a model added on one
+  // browser shows up on all the others.
+  const models = new Map(); // modelId -> { type:'coco'|'tm', model, name, classes?, url? }
   let detectionInterval = null;
-  let detectionTarget = null;
+  let watchTarget = null;   // { modelId, class }
   let detectionEnabled = false;
   let lastDetectionTime = 0;
+  let serverTMList = [];    // mirror of the server's tm_models.json
 
   // Read ?id=XXXX from URL
   const params = new URLSearchParams(location.search);
@@ -413,6 +502,13 @@
   });
 
   socket.on('streams:updated', renderStreamList);
+
+  // Server-shared Teachable Machine model registry. Fires on connect and
+  // every time another viewer adds or removes a custom model.
+  socket.on('tm-models:updated', (list) => {
+    serverTMList = Array.isArray(list) ? list : [];
+    reconcileTMRegistry();
+  });
 
   socket.on('viewer:error', ({ message, streamId }) => {
     setWaiting('icon', '⚠️', `Stream ${streamId || ''} not available. Pick another from the list.`);
@@ -537,8 +633,43 @@
     history.replaceState(null, '', `?id=${id}`);
     setWaiting('spin', 'Connecting…', `Joining stream ${id}…`);
     document.getElementById('recButton').disabled = false;
+    // New stream — re-enable orientation auto-detect.
+    userSetOrientation = false;
     socket.emit('viewer:watch', { streamId: id });
   }
+
+  // ─── Orientation (landscape ↔ portrait framing) ────────────────
+  // Viewer-side only — we just reshape the player. The video bytes are
+  // unchanged. Auto-detected from the incoming stream's resolution; a
+  // manual tap overrides until the next stream is selected.
+  let userSetOrientation = false;
+
+  function setOrientation(portrait) {
+    const wrap = document.getElementById('videoWrap');
+    wrap.classList.toggle('portrait', portrait);
+    document.getElementById('orientBtn').textContent = portrait ? '📱' : '🖥️';
+    // Container size changes — reset zoom so the user isn't left with
+    // a dangling pan offset that no longer points at anything.
+    if (typeof zoomReset === 'function') zoomReset();
+  }
+
+  function toggleOrientation() {
+    userSetOrientation = true;
+    const wrap = document.getElementById('videoWrap');
+    setOrientation(!wrap.classList.contains('portrait'));
+  }
+
+  function autoDetectOrientation() {
+    if (userSetOrientation) return;
+    const v = document.getElementById('stream');
+    if (!v.videoWidth || !v.videoHeight) return;
+    setOrientation(v.videoHeight > v.videoWidth);
+  }
+
+  document.getElementById('stream').addEventListener('loadedmetadata', autoDetectOrientation);
+  // Also re-check on resize events from the track (some browsers fire it
+  // when the broadcaster flips the camera mid-stream).
+  document.getElementById('stream').addEventListener('resize', autoDetectOrientation);
 
   // ─── Remote control panel ─────────────────────────────────────
   function updateRcPanel() {
@@ -825,25 +956,46 @@
         await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
       }
       btn.textContent = '⏳ Initializing model…';
-      cocoModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+      const cocoModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+      models.set('coco', { type: 'coco', model: cocoModel, name: 'Standard (COCO-SSD)' });
 
-      // Replace panel with controls
+      // Render the full panel: target picker, start/stop, custom-model manager.
       document.getElementById('odContent').innerHTML = `
-        <select class="od-select" id="odTarget">
-          <option value="">Select what to watch for…</option>
-          ${Object.entries(COCO_GROUPS).map(([group, items]) => `
-            <optgroup label="${group}">
-              ${items.map(c => `<option value="${c}">${c.charAt(0).toUpperCase() + c.slice(1)}</option>`).join('')}
-            </optgroup>`).join('')}
-        </select>
+        <select class="od-select" id="odTarget"></select>
         <button class="alarm-btn" style="background: var(--blue);" onclick="toggleDetection()" id="odToggleBtn">
           👁️ Start Watching
         </button>
         <div class="od-status" id="odStatus">Pick a target object above, then tap Start.</div>
-        <div class="ctrl-disabled-msg" style="margin-top: 8px; line-height: 1.5;">
-          Model: COCO-SSD (80 classes). For custom objects, swap the model — see comments in <code>view.html</code>.
+
+        <div class="tm-section">
+          <div class="tm-section-title">Custom Models · Teachable Machine</div>
+          <div id="tmModelList"></div>
+          <div class="tm-add-row">
+            <input type="text" class="od-select" id="tmUrlInput"
+                   placeholder="https://teachablemachine.withgoogle.com/models/XXXX/" autocomplete="off"/>
+            <button class="tm-add-btn" id="tmAddBtn" onclick="handleAddTMUrl()">+ Add</button>
+          </div>
+          <div id="tmAddMsg" class="tm-add-msg"></div>
+          <div class="ctrl-disabled-msg" style="margin-top: 8px; line-height: 1.5;">
+            Train at <a href="https://teachablemachine.withgoogle.com" target="_blank"
+              style="color:var(--blue)">teachablemachine.withgoogle.com</a> →
+            Export Model → Tensorflow.js → Upload → paste the share URL here.
+            Models persist locally in this browser.
+          </div>
         </div>
       `;
+
+      rebuildTargetPicker();
+      rebuildCustomModelList();
+
+      // Pull the latest server-side TM list (in case the socket event
+      // hasn't arrived yet) and load every entry so this viewer matches
+      // every other connected viewer.
+      try {
+        const res = await fetch('/api/tm-models');
+        if (res.ok) serverTMList = await res.json();
+      } catch (e) { console.warn('TM list fetch:', e); }
+      reconcileTMRegistry().catch(err => console.warn('TM reconcile:', err));
     } catch (e) {
       btn.disabled = false;
       btn.textContent = '⚡ Enable AI Detection';
@@ -857,87 +1009,386 @@
       detectionInterval = null;
       detectionEnabled = false;
       stopLocalAlarm();
-      clearDetectionCanvas();
       document.getElementById('odToggleBtn').textContent = '👁️ Start Watching';
       document.getElementById('odStatus').className = 'od-status';
       document.getElementById('odStatus').textContent = 'Stopped';
     } else {
-      const target = document.getElementById('odTarget').value;
-      if (!target) { alert('Please select a target object first'); return; }
-      detectionTarget = target;
+      const sel = document.getElementById('odTarget');
+      const value = sel ? sel.value : '';
+      if (!value) { alert('Please select a target object first'); return; }
+      const sepIdx = value.indexOf('::');
+      watchTarget = {
+        modelId: value.slice(0, sepIdx),
+        class:   value.slice(sepIdx + 2)
+      };
       detectionEnabled = true;
       lastDetectionTime = 0;
       document.getElementById('odToggleBtn').textContent = '⏹ Stop Watching';
       document.getElementById('odStatus').className = 'od-status';
-      document.getElementById('odStatus').textContent = `Looking for ${target}…`;
+      document.getElementById('odStatus').textContent = `Looking for ${watchTarget.class}…`;
       detectionInterval = setInterval(runDetection, 1500);
     }
   }
 
   async function runDetection() {
     const video = document.getElementById('stream');
-    if (!cocoModel || !video.videoWidth || video.paused) return;
+    if (!watchTarget || !video.videoWidth || video.paused) return;
 
-    let predictions = [];
+    const m = models.get(watchTarget.modelId);
+    if (!m) return;
+
+    let detected = false, confidence = 0;
     try {
-      predictions = await cocoModel.detect(video);
+      if (m.type === 'coco') {
+        const preds = await m.model.detect(video);
+        const hit = preds.find(p => p.class === watchTarget.class && p.score > 0.55);
+        if (hit) { detected = true; confidence = hit.score; }
+      } else if (m.type === 'tm') {
+        const preds = await m.model.predict(video);
+        const hit = preds.find(p => p.className === watchTarget.class);
+        // TM probabilities sum to 1 across classes; 0.7 is a sensible default.
+        if (hit && hit.probability > 0.7) { detected = true; confidence = hit.probability; }
+      }
     } catch (e) {
       console.error('Detection error:', e);
       return;
     }
 
-    drawDetections(predictions);
-
-    const match = predictions.find(p => p.class === detectionTarget && p.score > 0.55);
     const status = document.getElementById('odStatus');
-
-    if (match) {
+    if (detected) {
       status.className = 'od-status alert';
-      status.innerHTML = `🚨 DETECTED <strong>${match.class}</strong> at ${Math.round(match.score * 100)}% confidence`;
+      status.innerHTML = `🚨 DETECTED <strong>${escapeHtml(watchTarget.class)}</strong> at ${Math.round(confidence * 100)}% confidence`;
       lastDetectionTime = Date.now();
       if (!localAlarmActive) startLocalAlarm();
     } else {
-      // Stop alarm 3 seconds after last detection
-      if (localAlarmActive && Date.now() - lastDetectionTime > 3000) {
-        stopLocalAlarm();
-      }
+      if (localAlarmActive && Date.now() - lastDetectionTime > 3000) stopLocalAlarm();
       status.className = 'od-status';
       const sinceMsg = lastDetectionTime
         ? ` · last seen ${Math.floor((Date.now() - lastDetectionTime) / 1000)}s ago`
         : '';
-      status.textContent = `Looking for ${detectionTarget}${sinceMsg}`;
+      status.textContent = `Looking for ${watchTarget.class}${sinceMsg}`;
     }
   }
 
-  function drawDetections(predictions) {
-    const video  = document.getElementById('stream');
-    const canvas = document.getElementById('detectionCanvas');
-    if (!video.videoWidth) return;
-    canvas.width  = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // ─── Custom model (Teachable Machine) plumbing ────────────────
+  // Source of truth = the server's data/tm_models.json. We keep a local
+  // mirror in `serverTMList`, push add/remove via REST, and let the server
+  // broadcast 'tm-models:updated' to everyone (including the originator).
+  function normalizeTMUrl(raw) {
+    let u = String(raw || '').trim();
+    // Accept the share URL with or without trailing slash, or a direct
+    // model.json link — strip filename, ensure trailing slash.
+    u = u.replace(/(model\.json|metadata\.json)(\?.*)?$/i, '');
+    if (u && !u.endsWith('/')) u += '/';
+    return u;
+  }
+  function deriveTMName(url) {
+    const m = url.match(/\/models\/([^\/?#]+)\/?$/);
+    return m ? m[1] : url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  }
+  async function loadTMScript() {
+    if (window.tmImage) return;
+    if (!window.tf) {
+      await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js');
+    }
+    await loadScript('https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8/dist/teachablemachine-image.min.js');
+  }
+  async function loadTMModelInto(desc) {
+    const model = await tmImage.load(desc.url + 'model.json', desc.url + 'metadata.json');
+    const classes = model.getClassLabels();
+    const id = 'tm:' + desc.url;
+    models.set(id, { type: 'tm', model, name: desc.name || deriveTMName(desc.url), classes, url: desc.url });
+    return { id, classes };
+  }
 
-    predictions.forEach(p => {
-      const isTarget = p.class === detectionTarget && p.score > 0.55;
-      ctx.strokeStyle = isTarget ? '#ff3b30' : 'rgba(255,255,255,0.4)';
-      ctx.lineWidth = isTarget ? 4 : 2;
-      const [x, y, w, h] = p.bbox;
-      ctx.strokeRect(x, y, w, h);
-      const label = `${p.class} ${Math.round(p.score * 100)}%`;
-      ctx.font = 'bold 16px -apple-system, sans-serif';
-      const textW = ctx.measureText(label).width + 12;
-      ctx.fillStyle = isTarget ? '#ff3b30' : 'rgba(0,0,0,0.7)';
-      ctx.fillRect(x, y - 24, textW, 24);
-      ctx.fillStyle = '#fff';
-      ctx.fillText(label, x + 6, y - 7);
+  // Bring the local registry into agreement with `serverTMList`. Loads any
+  // new URLs, removes ones the server no longer has. No-op until detection
+  // is enabled (otherwise we'd download tfjs unprompted on first connect).
+  async function reconcileTMRegistry() {
+    if (!models.has('coco')) {
+      // Detection not enabled yet — picker will be populated when the user
+      // taps Enable AI Detection. Just refresh the list view if visible.
+      rebuildCustomModelList();
+      return;
+    }
+    try { await loadTMScript(); }
+    catch (e) { console.warn('TM script load failed:', e); return; }
+
+    const wantedUrls = new Set(serverTMList.map(m => m.url));
+
+    // Remove models the server no longer has.
+    for (const [id, m] of [...models.entries()]) {
+      if (m.type !== 'tm') continue;
+      if (!wantedUrls.has(m.url)) {
+        models.delete(id);
+        if (watchTarget && watchTarget.modelId === id) {
+          if (detectionInterval) toggleDetection();
+          watchTarget = null;
+        }
+      }
+    }
+    // Load models the server has that we don't.
+    for (const desc of serverTMList) {
+      const id = 'tm:' + desc.url;
+      if (!models.has(id)) {
+        try { await loadTMModelInto(desc); }
+        catch (e) { console.warn('TM model failed to load:', desc.url, e); }
+      }
+    }
+    rebuildTargetPicker();
+    rebuildCustomModelList();
+  }
+
+  async function addTMModelFromUrl(rawUrl) {
+    const url = normalizeTMUrl(rawUrl);
+    if (!url || !/^https?:\/\//i.test(url)) {
+      throw new Error('That doesn’t look like a model URL');
+    }
+    if (serverTMList.find(m => m.url === url)) {
+      throw new Error('This model is already registered on the server');
+    }
+
+    // Validate the URL by loading it locally first — this also gets us
+    // the class list to send to the server, so other viewers can show
+    // class names in the picker even before they download the model.
+    await loadTMScript();
+    const name = deriveTMName(url);
+    const { classes } = await loadTMModelInto({ url, name });
+
+    let res;
+    try {
+      res = await fetch('/api/tm-models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, name, classes })
+      });
+    } catch (netErr) {
+      models.delete('tm:' + url);
+      throw new Error('Could not reach server: ' + netErr.message);
+    }
+    if (!res.ok && res.status !== 409) {
+      models.delete('tm:' + url);
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Server returned ${res.status}`);
+    }
+    // Don't wait for the broadcast to round-trip — render now.
+    rebuildTargetPicker();
+    rebuildCustomModelList();
+    return { name, classes };
+  }
+
+  async function removeTMModel(url) {
+    // Server-driven: DELETE → server broadcasts → reconcile clears it
+    // here and on every other viewer. Keeps everyone consistent.
+    try {
+      await fetch('/api/tm-models?url=' + encodeURIComponent(url), { method: 'DELETE' });
+    } catch (e) {
+      alert('Failed to remove model: ' + e.message);
+    }
+  }
+  function rebuildTargetPicker() {
+    const sel = document.getElementById('odTarget');
+    if (!sel) return;
+    const prev = sel.value;
+    let html = '<option value="">Select what to watch for…</option>';
+    if (models.has('coco')) {
+      for (const [group, items] of Object.entries(COCO_GROUPS)) {
+        html += `<optgroup label="Standard · ${escapeHtml(group)}">`;
+        for (const c of items) {
+          const cap = c.charAt(0).toUpperCase() + c.slice(1);
+          html += `<option value="coco::${escapeHtml(c)}">${escapeHtml(cap)}</option>`;
+        }
+        html += '</optgroup>';
+      }
+    }
+    for (const [id, m] of models) {
+      if (m.type !== 'tm') continue;
+      html += `<optgroup label="Custom · ${escapeHtml(m.name)}">`;
+      for (const c of m.classes) {
+        html += `<option value="${escapeHtml(id)}::${escapeHtml(c)}">${escapeHtml(c)}</option>`;
+      }
+      html += '</optgroup>';
+    }
+    sel.innerHTML = html;
+    // Restore previous selection if it still exists.
+    if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  }
+  function rebuildCustomModelList() {
+    const list = document.getElementById('tmModelList');
+    if (!list) return;
+    const tmModels = [...models.values()].filter(m => m.type === 'tm');
+    if (tmModels.length === 0) {
+      list.innerHTML = '<div class="tm-empty">No custom models loaded yet.</div>';
+      return;
+    }
+    list.innerHTML = tmModels.map(m => {
+      const preview = m.classes.slice(0, 3).map(escapeHtml).join(', ') +
+                      (m.classes.length > 3 ? '…' : '');
+      return `
+        <div class="tm-model-row">
+          <div style="min-width:0;">
+            <div class="tm-model-name">${escapeHtml(m.name)}</div>
+            <div class="tm-model-meta">${m.classes.length} class${m.classes.length === 1 ? '' : 'es'} · ${preview}</div>
+          </div>
+          <button class="tm-remove-btn" data-url="${escapeHtml(m.url)}" title="Remove model">✕</button>
+        </div>`;
+    }).join('');
+    list.querySelectorAll('.tm-remove-btn').forEach(btn => {
+      btn.addEventListener('click', () => removeTMModel(btn.dataset.url));
     });
   }
-
-  function clearDetectionCanvas() {
-    const canvas = document.getElementById('detectionCanvas');
-    if (canvas.getContext) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+  async function handleAddTMUrl() {
+    const input = document.getElementById('tmUrlInput');
+    const msg   = document.getElementById('tmAddMsg');
+    const btn   = document.getElementById('tmAddBtn');
+    const raw = input.value;
+    if (!raw.trim()) return;
+    msg.className = 'tm-add-msg';
+    msg.textContent = '';
+    btn.disabled = true;
+    btn.textContent = '⏳ Loading…';
+    try {
+      const r = await addTMModelFromUrl(raw);
+      input.value = '';
+      msg.className = 'tm-add-msg ok';
+      msg.textContent = `✓ Loaded "${r.name}" (${r.classes.length} classes)`;
+    } catch (e) {
+      msg.className = 'tm-add-msg err';
+      msg.textContent = '✕ ' + (e.message || 'failed to load that URL');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '+ Add';
+    }
   }
+
+  // ─── Zoom & pan (viewer-side digital zoom on broadcaster's stream) ──
+  const ZOOM_MIN = 1, ZOOM_MAX = 5, ZOOM_STEP = 0.25;
+  let zoomLevel = 1, panX = 0, panY = 0;
+  let dragging = false, dragStart = null;
+  let pinchStartDist = 0, pinchStartZoom = 1, pinchCenter = null;
+  let touchPanStart = null;
+
+  function applyZoomTransform() {
+    const stage = document.getElementById('zoomStage');
+    if (!stage) return;
+    stage.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
+    document.getElementById('zoomLevel').textContent = zoomLevel.toFixed(2) + '×';
+    document.getElementById('zoomOutBtn').disabled   = zoomLevel <= ZOOM_MIN + 1e-3;
+    document.getElementById('zoomInBtn').disabled    = zoomLevel >= ZOOM_MAX - 1e-3;
+    document.getElementById('zoomResetBtn').disabled = zoomLevel === 1 && panX === 0 && panY === 0;
+    document.getElementById('videoWrap').classList.toggle('zoomed', zoomLevel > 1);
+  }
+
+  function clampPan() {
+    const wrap = document.getElementById('videoWrap').getBoundingClientRect();
+    const maxOffsetX = (zoomLevel - 1) * wrap.width;
+    const maxOffsetY = (zoomLevel - 1) * wrap.height;
+    panX = Math.min(0, Math.max(-maxOffsetX, panX));
+    panY = Math.min(0, Math.max(-maxOffsetY, panY));
+  }
+
+  function setZoom(newZoom, focusX, focusY) {
+    const wrap = document.getElementById('videoWrap').getBoundingClientRect();
+    const fx = focusX != null ? focusX : wrap.width / 2;
+    const fy = focusY != null ? focusY : wrap.height / 2;
+    const z = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, newZoom));
+    if (Math.abs(z - zoomLevel) < 1e-4) return;
+    // Keep the focal point under the cursor while zooming.
+    panX = fx - (fx - panX) * z / zoomLevel;
+    panY = fy - (fy - panY) * z / zoomLevel;
+    zoomLevel = z;
+    if (zoomLevel <= 1.0001) { zoomLevel = 1; panX = 0; panY = 0; }
+    clampPan();
+    applyZoomTransform();
+  }
+
+  function zoomIn()    { setZoom(zoomLevel + ZOOM_STEP); }
+  function zoomOut()   { setZoom(zoomLevel - ZOOM_STEP); }
+  function zoomReset() { zoomLevel = 1; panX = 0; panY = 0; applyZoomTransform(); }
+
+  (function wireZoomGestures() {
+    const wrap = document.getElementById('videoWrap');
+
+    wrap.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const rect = wrap.getBoundingClientRect();
+      const fx = e.clientX - rect.left;
+      const fy = e.clientY - rect.top;
+      const delta = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
+      setZoom(zoomLevel + delta, fx, fy);
+    }, { passive: false });
+
+    wrap.addEventListener('dblclick', (e) => {
+      const rect = wrap.getBoundingClientRect();
+      const fx = e.clientX - rect.left;
+      const fy = e.clientY - rect.top;
+      if (zoomLevel > 1) zoomReset();
+      else setZoom(2, fx, fy);
+    });
+
+    wrap.addEventListener('mousedown', (e) => {
+      if (zoomLevel <= 1) return;
+      // Don't start a drag when clicking inside the zoom-controls.
+      if (e.target.closest('.zoom-controls')) return;
+      dragging = true;
+      dragStart = { x: e.clientX - panX, y: e.clientY - panY };
+      wrap.classList.add('dragging');
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      panX = e.clientX - dragStart.x;
+      panY = e.clientY - dragStart.y;
+      clampPan();
+      applyZoomTransform();
+    });
+    window.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      wrap.classList.remove('dragging');
+    });
+
+    wrap.addEventListener('touchstart', (e) => {
+      if (e.target.closest('.zoom-controls')) return;
+      if (e.touches.length === 1 && zoomLevel > 1) {
+        touchPanStart = {
+          x: e.touches[0].clientX - panX,
+          y: e.touches[0].clientY - panY
+        };
+      } else if (e.touches.length === 2) {
+        const t1 = e.touches[0], t2 = e.touches[1];
+        pinchStartDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY) || 1;
+        pinchStartZoom = zoomLevel;
+        const rect = wrap.getBoundingClientRect();
+        pinchCenter = {
+          x: (t1.clientX + t2.clientX) / 2 - rect.left,
+          y: (t1.clientY + t2.clientY) / 2 - rect.top
+        };
+      }
+    }, { passive: true });
+
+    wrap.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 1 && touchPanStart && zoomLevel > 1) {
+        e.preventDefault();
+        panX = e.touches[0].clientX - touchPanStart.x;
+        panY = e.touches[0].clientY - touchPanStart.y;
+        clampPan();
+        applyZoomTransform();
+      } else if (e.touches.length === 2 && pinchCenter) {
+        e.preventDefault();
+        const t1 = e.touches[0], t2 = e.touches[1];
+        const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+        setZoom(pinchStartZoom * (dist / pinchStartDist), pinchCenter.x, pinchCenter.y);
+      }
+    }, { passive: false });
+
+    wrap.addEventListener('touchend', () => {
+      touchPanStart = null;
+      pinchCenter = null;
+    });
+
+    applyZoomTransform();
+  })();
 </script>
 </body>
 </html>

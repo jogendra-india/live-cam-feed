@@ -140,12 +140,29 @@
     /* CONTROLS */
     .controls {
       position: fixed; bottom: 0; left: 0; right: 0;
-      padding: 18px 28px calc(env(safe-area-inset-bottom, 0px) + 24px);
+      padding: 18px 16px calc(env(safe-area-inset-bottom, 0px) + 24px);
       background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
       z-index: 10;
     }
     .ctrl-row {
-      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      /* Fallback for very narrow viewports — let the user swipe to reach
+         buttons that don't fit (the flip button was the typical victim). */
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+    }
+    .ctrl-row::-webkit-scrollbar { display: none; }
+    .ctrl-group { flex-shrink: 0; }
+    /* Tighten further on the smallest phones so all five buttons sit
+       inside the viewport without needing to scroll. */
+    @media (max-width: 360px) {
+      .controls { padding-left: 10px; padding-right: 10px; }
+      .ctrl-row { gap: 4px; }
+      .icon-btn { width: 44px; height: 44px; font-size: 18px; }
+      .live-btn { width: 68px; height: 68px; }
+      .live-inner { width: 46px; height: 46px; }
+      .live-btn.live .live-inner { width: 26px; height: 26px; }
     }
     .icon-btn {
       width: 50px; height: 50px; border-radius: 50%; border: none;

@@ -20,8 +20,12 @@ const { Server } = require("socket.io");
 const RECORDINGS_DIR = path.join(__dirname, "recordings");
 if (!fs.existsSync(RECORDINGS_DIR)) fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
 
+const DATA_DIR = path.join(__dirname, "data");
+const TM_MODELS_FILE = path.join(DATA_DIR, "tm_models.json");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "256kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/recordings", express.static(RECORDINGS_DIR));
 
@@ -79,6 +83,36 @@ function sanitizeFilename(s) {
 }
 
 // ───────────────────────────────────────────────────────────────────
+//   TEACHABLE MACHINE MODEL REGISTRY (shared across all viewers)
+// ───────────────────────────────────────────────────────────────────
+function loadTMModels() {
+  try {
+    if (!fs.existsSync(TM_MODELS_FILE)) return [];
+    const raw = fs.readFileSync(TM_MODELS_FILE, "utf8");
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list : [];
+  } catch (e) {
+    console.warn("Could not read tm_models.json:", e.message);
+    return [];
+  }
+}
+function saveTMModels(list) {
+  try {
+    fs.writeFileSync(TM_MODELS_FILE, JSON.stringify(list, null, 2));
+  } catch (e) {
+    console.error("Could not save tm_models.json:", e.message);
+  }
+}
+function normalizeTMUrl(raw) {
+  let u = String(raw || "").trim();
+  u = u.replace(/(model\.json|metadata\.json)(\?.*)?$/i, "");
+  if (u && !u.endsWith("/")) u += "/";
+  return u;
+}
+let tmModels = loadTMModels(); // [{ url, name, classes, addedAt }]
+function broadcastTMModels() { io.emit("tm-models:updated", tmModels); }
+
+// ───────────────────────────────────────────────────────────────────
 //   REST API
 // ───────────────────────────────────────────────────────────────────
 app.get("/api/streams", (_req, res) => res.json(getStreamList()));
@@ -120,6 +154,44 @@ app.delete("/api/recordings/:filename", (req, res) => {
   });
 });
 
+// ── Custom AI model registry (Teachable Machine URLs) ──
+app.get("/api/tm-models", (_req, res) => res.json(tmModels));
+
+app.post("/api/tm-models", (req, res) => {
+  const { url, name, classes } = req.body || {};
+  if (!url || !/^https?:\/\//i.test(String(url))) {
+    return res.status(400).json({ error: "Invalid URL" });
+  }
+  const finalUrl = normalizeTMUrl(url);
+  if (!finalUrl) return res.status(400).json({ error: "Invalid URL" });
+  if (tmModels.find(m => m.url === finalUrl)) {
+    return res.status(409).json({ error: "Model already registered" });
+  }
+  const entry = {
+    url: finalUrl,
+    name: String(name || "").trim() ||
+          finalUrl.replace(/^https?:\/\//, "").replace(/\/$/, ""),
+    classes: Array.isArray(classes) ? classes.map(String) : [],
+    addedAt: Date.now()
+  };
+  tmModels.push(entry);
+  saveTMModels(tmModels);
+  broadcastTMModels();
+  console.log(`[TM+] ${entry.name} (${entry.classes.length} classes) ${entry.url}`);
+  res.json(entry);
+});
+
+app.delete("/api/tm-models", (req, res) => {
+  const url = normalizeTMUrl(req.query.url || "");
+  const idx = tmModels.findIndex(m => m.url === url);
+  if (idx < 0) return res.status(404).json({ error: "Not found" });
+  const removed = tmModels.splice(idx, 1)[0];
+  saveTMModels(tmModels);
+  broadcastTMModels();
+  console.log(`[TM-] ${removed.name} ${removed.url}`);
+  res.json({ ok: true, removed });
+});
+
 // ───────────────────────────────────────────────────────────────────
 //   HTTP / HTTPS auto-detection
 // ───────────────────────────────────────────────────────────────────
@@ -144,6 +216,7 @@ const io = new Server(server, {
 // ───────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
   socket.emit("streams:updated", getStreamList());
+  socket.emit("tm-models:updated", tmModels);
 
   // ── BROADCASTER ───────────────────────────────────────────────
   socket.on("broadcaster:register", ({ name }, cb) => {

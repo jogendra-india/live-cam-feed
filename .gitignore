@@ -2,6 +2,7 @@ node_modules/
 recordings/*.webm
 recordings/.gitkeep.bak
 certs/
+data/tm_models.json
 *.log
 .env
 .DS_Store
