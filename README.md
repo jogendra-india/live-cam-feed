@@ -68,6 +68,7 @@ Video flows **directly peer-to-peer** between devices using WebRTC, so latency i
 ### Broadcasting
 - 📱 **Mobile-first interface** — open in a phone browser, camera preview is instant; bottom controls auto-compact for narrow screens and swipe-scroll if anything still doesn't fit
 - ⚡ **Auto go-live** — page open = stream available, no extra tap needed
+- 🔁 **Resume on refresh** — name and stream ID are remembered; the broadcaster reconnects on the same key so viewer bookmarks (`?id=…`) keep working. A "Change stream name" button in the ⚙ panel resets it.
 - 🎯 **Multiple simultaneous broadcasters** — each gets a unique 4-character ID and a friendly name
 - 🔄 **Front/rear camera flip** mid-stream, no reconnection
 - 🎙️ **Audio off by default** — broadcaster opts in (no second permission prompt later)

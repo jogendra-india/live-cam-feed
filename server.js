@@ -44,7 +44,21 @@ const viewerToStream = new Map(); // viewerSocketId → streamId
 
 const ID_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // unambiguous chars
 
-function generateStreamId() {
+function isValidPreferredId(s) {
+  if (typeof s !== "string" || s.length !== 4) return false;
+  const up = s.toUpperCase();
+  for (const c of up) if (!ID_CHARS.includes(c)) return false;
+  return true;
+}
+
+function generateStreamId(preferred) {
+  // If the broadcaster is reconnecting after a refresh, they pass back the
+  // streamId they were last assigned. We honor it iff it parses as one of
+  // our IDs and isn't currently in use, so viewers' bookmarks stay valid.
+  if (preferred && isValidPreferredId(preferred)) {
+    const up = preferred.toUpperCase();
+    if (!streams.has(up)) return up;
+  }
   let id;
   do {
     id = "";
@@ -219,8 +233,8 @@ io.on("connection", (socket) => {
   socket.emit("tm-models:updated", tmModels);
 
   // ── BROADCASTER ───────────────────────────────────────────────
-  socket.on("broadcaster:register", ({ name }, cb) => {
-    const streamId = generateStreamId();
+  socket.on("broadcaster:register", ({ name, preferredStreamId } = {}, cb) => {
+    const streamId = generateStreamId(preferredStreamId);
     streams.set(streamId, {
       socketId: socket.id,
       name: (name || "").trim() || `Cam-${streamId}`,

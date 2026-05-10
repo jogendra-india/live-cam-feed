@@ -298,6 +298,14 @@
   </div>
   <div style="padding: 0 4px;">
     <div style="font-size: 12px; color: var(--muted); word-wrap: break-word;" id="settingsName">—</div>
+    <button onclick="changeStreamName()" id="changeNameBtn"
+            style="margin-top: 10px; width: 100%; padding: 8px;
+                   background: rgba(255,255,255,0.08);
+                   border: 1px solid var(--border); border-radius: 6px;
+                   color: #fff; font-size: 12px; cursor: pointer;
+                   -webkit-tap-highlight-color: transparent;">
+      ✎ Change stream name
+    </button>
   </div>
 </div>
 
@@ -365,6 +373,23 @@
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" }
   ]};
+
+  // ─── Persisted broadcaster identity ─────────────────────────────
+  // After the first successful registration we save the stream name and
+  // the streamId the server granted, so a refresh / accidental reload
+  // can resume on the same key — viewers' bookmarks (e.g. ?id=A3K9)
+  // keep working without anyone re-pasting the link.
+  const BC_STATE_KEY = 'lan-stream:bc-state';
+  function loadBcState() {
+    try { return JSON.parse(localStorage.getItem(BC_STATE_KEY) || '{}') || {}; }
+    catch { return {}; }
+  }
+  function saveBcState(state) {
+    try { localStorage.setItem(BC_STATE_KEY, JSON.stringify(state)); } catch {}
+  }
+  function clearBcState() {
+    try { localStorage.removeItem(BC_STATE_KEY); } catch {}
+  }
 
   // ─── Setup flow ────────────────────────────────────────────────
   document.getElementById('streamName').addEventListener('keydown', e => {
@@ -556,9 +581,16 @@
       userStopped = false;
       // Register with server NOW (not on socket connect) — this is the moment
       // the stream becomes visible to viewers and peer connections start working.
-      socket.emit('broadcaster:register', { name: streamName }, ({ streamId: id, name }) => {
+      // We also pass the previously-granted streamId so the server can reuse
+      // it when free, keeping viewer bookmarks valid across a refresh.
+      const prev = loadBcState();
+      socket.emit('broadcaster:register', {
+        name: streamName,
+        preferredStreamId: prev.streamId
+      }, ({ streamId: id, name }) => {
         streamId = id;
         streamName = name;
+        saveBcState({ name, streamId: id });
         document.getElementById('idBadge').textContent = id;
         document.getElementById('nameTag').textContent = name;
         document.getElementById('settingsName').textContent = name;
@@ -709,6 +741,15 @@
     if (socket) socket.emit('broadcaster:state', { allowRemoteControl });
   }
 
+  function changeStreamName() {
+    if (!confirm('Stop this broadcast and pick a new stream name?')) return;
+    clearBcState();
+    if (isLive && socket) {
+      try { socket.emit('broadcaster:unregister'); } catch {}
+    }
+    location.reload();
+  }
+
   // ─── UI ────────────────────────────────────────────────────────
   function updateViewerBadge() {
     document.getElementById('viewerBadge').textContent =
@@ -721,6 +762,20 @@
       e.preventDefault();
     }
   }, { passive: false });
+
+  // Auto-resume: if we already broadcast from this browser, skip the
+  // setup modal and start with the saved name. The server will reuse
+  // the previously-granted streamId when it's still free.
+  (function autoResumeIfSaved() {
+    const saved = loadBcState();
+    if (!saved.name) return;
+    document.getElementById('streamName').value = saved.name;
+    document.getElementById('settingsName').textContent = saved.name;
+    if (saved.streamId) document.getElementById('idBadge').textContent = saved.streamId;
+    // Defer one tick so DOM is fully ready and the user sees a brief
+    // setup flash → clean transition into the live view.
+    setTimeout(initBroadcast, 0);
+  })();
 </script>
 </body>
 </html>
